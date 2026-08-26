@@ -1,8 +1,9 @@
 # Conformance
 
-The OCLP standard repository owns the normative text, JSON Schemas, canonical
-fixtures, and expected record digests. The Python SDK tests itself against that
-external corpus instead of generating the contract from Python models.
+The OCLP standard repository owns the Core specification, JSON Schemas,
+canonical fixtures, and expected record digests. Optional profile contracts are
+published independently in `oclp-profiles`. The Python SDK tests itself against
+both external corpora instead of generating either contract from Python models.
 
 ## Run the SDK against the standard
 
@@ -11,19 +12,25 @@ it:
 
 ```bash
 git clone https://github.com/EvanZ/open-computation-lifecycle.git ../open-computation-lifecycle
+git clone https://github.com/EvanZ/oclp-profiles.git ../oclp-profiles
 OCLP_STANDARD_ROOT=../open-computation-lifecycle \
-  uv run pytest tests/test_standard_conformance.py
+OCLP_PROFILES_ROOT=../oclp-profiles \
+  uv run pytest
 ```
 
 The test parses valid records, rejects invalid records, checks RFC 8785
 canonical JSON, verifies expected SHA-256 record digests, and validates the
-standard's derivation fixtures.
+standard's derivation fixtures. For each profile supported by this SDK, it also
+validates the profile's independent schemas, vectors, canonical JSON, and
+digest values.
 
 ## Cross-language contract
 
-The standard repository also carries an independent TypeScript verifier. A
-protocol change is not complete until the normative specification, schemas,
-fixtures, expected canonical values, and independent verifiers agree.
+The Core standard and the profile repository each carry independent TypeScript
+verifiers. A Core or profile change is not complete until its normative
+specification, schemas, fixtures, expected canonical values, and independent
+verifiers agree.
 
 See [cross-language conformance](https://evanz.github.io/open-computation-lifecycle/protocol/conformance/)
-for the contract and change process.
+for Core, and [OCLP Profiles](https://evanz.github.io/oclp-profiles/conformance/)
+for optional profile contracts.

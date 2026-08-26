@@ -19,6 +19,12 @@ jobs:
           repository: EvanZ/open-computation-lifecycle
           path: standard
 
+      - name: Check out OCLP profiles
+        uses: actions/checkout@v7
+        with:
+          repository: EvanZ/oclp-profiles
+          path: profiles
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -33,8 +39,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --group dev
 
-      - name: Test SDK and standard conformance
-        run: OCLP_STANDARD_ROOT=standard uv run pytest
+      - name: Test SDK and external conformance
+        run: OCLP_STANDARD_ROOT=standard OCLP_PROFILES_ROOT=profiles uv run pytest
 
       - name: Lint SDK
         run: uv run ruff check .

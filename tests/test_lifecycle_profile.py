@@ -3,35 +3,47 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from oclp import canonical_json_bytes, record_digest
 from oclp.models import LifecycleEvent, RecordReference
 from oclp.profiles import LifecycleTimelineVector, lifecycle_timeline
 
-PROFILE_ROOT = Path(__file__).parent / "profiles" / "lifecycle"
+
+def _profile_root() -> Path:
+    configured = os.environ.get("OCLP_PROFILES_ROOT")
+    if configured is None:
+        pytest.skip("set OCLP_PROFILES_ROOT to run the profile conformance suite")
+    return Path(configured).resolve() / "tests" / "profiles" / "lifecycle"
+
+
+def _manifest() -> dict[str, object]:
+    return json.loads((_profile_root() / "manifest.json").read_text())
 
 
 def test_valid_lifecycle_timeline_vector_is_accepted() -> None:
-    value = json.loads((PROFILE_ROOT / "valid" / "timeline.json").read_text())
+    for entry in _manifest()["valid"]:
+        assert isinstance(entry, dict)
+        timeline = LifecycleTimelineVector.model_validate(
+            json.loads((_profile_root() / entry["path"]).read_text())
+        )
 
-    timeline = LifecycleTimelineVector.model_validate(value)
+        assert canonical_json_bytes(timeline).decode() == entry["canonical_json"]
+        assert str(record_digest(timeline)) == entry["digest"]
 
-    assert timeline.events[-1].status == "succeeded"
 
+def test_invalid_lifecycle_vectors_are_rejected() -> None:
+    for name in _manifest()["invalid"]:
+        assert isinstance(name, str)
+        value = json.loads((_profile_root() / name).read_text())
 
-@pytest.mark.parametrize(
-    "name",
-    ["terminal-without-status.json", "wrong-profile-version.json"],
-)
-def test_invalid_lifecycle_vectors_are_rejected(name: str) -> None:
-    value = json.loads((PROFILE_ROOT / "invalid" / name).read_text())
-
-    with pytest.raises((ValidationError, ValueError)):
-        LifecycleTimelineVector.model_validate(value)
+        with pytest.raises((ValidationError, ValueError)):
+            LifecycleTimelineVector.model_validate(value)
 
 
 def test_lifecycle_timeline_resolves_portable_event_times() -> None:

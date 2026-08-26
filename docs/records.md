@@ -59,9 +59,12 @@ when its metadata changes without claiming that its payload bytes changed.
 ## Profiles
 
 Profiles add opt-in semantic layers without expanding the portable core. This
-SDK includes helpers for the draft `dataset-snapshot`, `execution-context`, and
-`lifecycle` profiles under `oclp.profiles`.
+SDK includes optional helpers for the OCLP-maintained `dataset-snapshot`,
+`execution-context`, and `lifecycle` profiles under `oclp.profiles`. Their
+definitions, schemas, and conformance vectors are owned by the separate
+[OCLP Profiles](https://evanz.github.io/oclp-profiles/) package.
 
 Profile bindings are carried by the core `profiles` field. A producer emits
 `profiles: null` when no profile applies. A consumer that needs profile-specific
-meaning validates the named profile in addition to the core record.
+meaning explicitly validates the named profile in addition to the core record;
+`parse_record` intentionally validates only the portable Core envelope.

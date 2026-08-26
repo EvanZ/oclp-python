@@ -3,34 +3,45 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from oclp import canonical_json_bytes, record_digest
 from oclp.profiles import ExecutionContextBinding, ExecutionContextManifest
 
-PROFILE_ROOT = Path(__file__).parent / "profiles" / "execution-context"
+
+def _profile_root() -> Path:
+    configured = os.environ.get("OCLP_PROFILES_ROOT")
+    if configured is None:
+        pytest.skip("set OCLP_PROFILES_ROOT to run the profile conformance suite")
+    return Path(configured).resolve() / "tests" / "profiles" / "execution-context"
+
+
+def _manifest() -> dict[str, object]:
+    return json.loads((_profile_root() / "manifest.json").read_text())
 
 
 def test_valid_execution_context_profile_vector_is_accepted() -> None:
-    value = json.loads((PROFILE_ROOT / "valid" / "manifest.json").read_text())
+    for entry in _manifest()["valid"]:
+        assert isinstance(entry, dict)
+        profile = ExecutionContextManifest.model_validate(
+            json.loads((_profile_root() / entry["path"]).read_text())
+        )
 
-    profile = ExecutionContextManifest.model_validate(value)
-
-    assert profile.runtime.interpreter == "CPython 3.12.11"
-    assert profile.configuration is not None
+        assert canonical_json_bytes(profile).decode() == entry["canonical_json"]
+        assert str(record_digest(profile)) == entry["digest"]
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["configuration-unbound.json", "dependency-lock-unbound.json"],
-)
-def test_invalid_execution_context_profile_vectors_are_rejected(name: str) -> None:
-    value = json.loads((PROFILE_ROOT / "invalid" / name).read_text())
+def test_invalid_execution_context_profile_vectors_are_rejected() -> None:
+    for name in _manifest()["invalid"]:
+        assert isinstance(name, str)
+        value = json.loads((_profile_root() / name).read_text())
 
-    with pytest.raises(ValidationError):
-        ExecutionContextManifest.model_validate(value)
+        with pytest.raises(ValidationError):
+            ExecutionContextManifest.model_validate(value)
 
 
 def test_execution_context_binding_requires_an_exact_manifest_reference() -> None:
