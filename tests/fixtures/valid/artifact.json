@@ -1,0 +1,11 @@
+{
+  "oclp_version": "0.1.0-draft",
+  "kind": "artifact",
+  "id": "artifact.example",
+  "media_type": "application/octet-stream",
+  "digest": {
+    "algorithm": "sha256",
+    "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "size": 12
+}

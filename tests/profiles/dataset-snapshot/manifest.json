@@ -1,0 +1,13 @@
+{
+  "valid": [
+    {
+      "path": "valid/manifest.json",
+      "canonical_json": "{\"annotations\":{\"example.org/producer\":\"partition-writer\"},\"data_format\":\"application/vnd.apache.parquet\",\"dataset_id\":\"urn:example:dataset:customer-export\",\"oclp_profile\":\"dataset-snapshot\",\"oclp_profile_version\":\"0.1.0-draft\",\"partitions\":[{\"artifact\":{\"digest\":{\"algorithm\":\"sha256\",\"value\":\"2c7a438a16eee01e8403cefea2644319e37237039504ae8b2fada4424097cd3d\"},\"id\":\"urn:example:artifact:customer-export-partition\"},\"name\":\"date=2026-08-19/part-00000.parquet\",\"values\":{\"date\":\"2026-08-19\"}}]}",
+      "digest": "sha256:f10be045f3c0741a8d6f3c5bd31c3662ed742415adb53d4f891dffc223693cc6"
+    }
+  ],
+  "invalid": [
+    "invalid/unbound-partition.json",
+    "invalid/unsorted-partitions.json"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "binding": {
+    "version": "0.2.0-draft"
+  },
+  "events": [
+    {
+      "event_type": "invocation-requested",
+      "occurred_at": "2026-08-24T18:00:00Z",
+      "sequence": 0
+    }
+  ]
+}

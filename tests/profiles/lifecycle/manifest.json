@@ -1,0 +1,13 @@
+{
+  "valid": [
+    {
+      "path": "valid/timeline.json",
+      "canonical_json": "{\"binding\":{\"version\":\"0.1.0-draft\"},\"events\":[{\"event_type\":\"invocation-requested\",\"occurred_at\":\"2026-08-24T18:00:00Z\",\"sequence\":0},{\"attempt_id\":\"scheduler-42\",\"event_type\":\"attempt-started\",\"occurred_at\":\"2026-08-24T18:00:01Z\",\"sequence\":1},{\"attempt_id\":\"scheduler-42\",\"event_type\":\"invocation-terminal\",\"occurred_at\":\"2026-08-24T18:00:04Z\",\"sequence\":2,\"status\":\"succeeded\"}]}",
+      "digest": "sha256:3a650fe8162d2d23a764f33c91b211505f022c4f653ad0c9362095a7edd26133"
+    }
+  ],
+  "invalid": [
+    "invalid/terminal-without-status.json",
+    "invalid/wrong-profile-version.json"
+  ]
+}
