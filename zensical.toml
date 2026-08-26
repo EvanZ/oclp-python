@@ -1,0 +1,20 @@
+[project]
+site_name = "OCLP Python SDK"
+site_description = "Reference Python SDK for the Open Computation Lifecycle Protocol."
+site_url = "https://evanz.github.io/oclp-python/"
+repo_url = "https://github.com/EvanZ/oclp-python"
+docs_dir = "docs"
+site_dir = "site"
+nav = [
+  {"Overview" = "index.md"},
+  {"Getting started" = "getting-started.md"},
+  {"Using the SDK" = [
+    {"Records and canonicalization" = "records.md"},
+    {"DuckDB catalog" = "catalog.md"},
+    {"Conformance" = "conformance.md"},
+  ]},
+]
+
+[project.theme]
+variant = "modern"
+features = ["navigation.path", "navigation.sections", "navigation.top", "toc.follow"]

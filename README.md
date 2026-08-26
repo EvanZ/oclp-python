@@ -12,15 +12,23 @@ vectors live in the separate
 [`open-computation-lifecycle`](https://github.com/EvanZ/open-computation-lifecycle)
 repository. The SDK follows that specification; it does not define it.
 
+Full SDK documentation is published at
+[evanz.github.io/oclp-python](https://evanz.github.io/oclp-python/).
+
 ## Install
 
 ```bash
-pip install "oclp[duckdb]"
+pip install "oclp[duckdb] @ git+https://github.com/EvanZ/oclp-python.git@main"
 ```
+
+For a reproducible deployment, replace `main` with a reviewed immutable commit
+SHA. The optional `duckdb` extra installs the local record catalog.
 
 For development:
 
 ```bash
+git clone https://github.com/EvanZ/oclp-python.git
+cd oclp-python
 uv sync --group dev
 uv run pytest
 uv run ruff check .
