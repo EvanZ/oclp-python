@@ -69,6 +69,31 @@ def test_invocation_may_publish_an_artifact_set_output() -> None:
     validate_derivation_graph((source, definition, invocation, result, release))
 
 
+def test_invocation_may_consume_an_artifact_set_input() -> None:
+    member = _artifact("model-state", "a")
+    package = ArtifactSet(
+        id="urn:example:artifact-set:model-package",
+        members=(ArtifactSetMember(name="model.joblib", artifact=_reference(member)),),
+    )
+    result = _artifact("result", "b")
+    definition = ComputationDefinition(
+        id="urn:example:definition:score",
+        implementation=Implementation(
+            kind="other",
+            locator="example:score",
+            source={"kind": "opaque", "reason": "test fixture"},
+        ),
+    )
+    invocation = Invocation(
+        id="urn:example:invocation:score",
+        definition=_reference(definition),
+        inputs={"model_package": (_reference(package),)},
+        outputs={"result": (_reference(result),)},
+    )
+
+    validate_derivation_graph((member, package, definition, invocation, result))
+
+
 def test_invocation_outputs_must_be_content_bound() -> None:
     with pytest.raises(ValidationError, match="outputs must include record digests"):
         Invocation(

@@ -36,6 +36,12 @@ from oclp import (
 - `validate_invocation_hierarchy(records)` validates the separate parent-child
   Invocation hierarchy and rejects orchestration cycles.
 
+An Invocation input or output may resolve to either an `Artifact` or an
+`ArtifactSet`. Use an ArtifactSet when a computation consumes or produces one
+named, immutable package (for example a model-serving release). The SDK treats
+that package as one derivation node; its named members remain an inventory
+overlay rather than fan-out input edges.
+
 ## Logical identity and immutable revisions
 
 An OCLP `id` is a logical name. A record digest binds one exact canonical record

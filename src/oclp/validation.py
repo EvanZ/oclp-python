@@ -30,12 +30,12 @@ def load_record(path: str | Path) -> OclpRecord:
 
 
 def validate_derivation_graph(records: Iterable[OclpRecord]) -> None:
-    """Validate the resolved Artifact -> Invocation -> output DAG.
+    """Validate the resolved Artifact/ArtifactSet -> Invocation -> output DAG.
 
     Record-level parsing permits unbound input references because an individual
     record cannot resolve them. A collection offered as a derivation graph must
-    bind and resolve every Definition, input Artifact, and output Artifact or
-    ArtifactSet reference used by an Invocation.
+    bind and resolve every Definition, input Artifact or ArtifactSet, and
+    output Artifact or ArtifactSet reference used by an Invocation.
     """
 
     by_digest = {record_digest(record).value: record for record in records}
@@ -83,7 +83,7 @@ def validate_derivation_graph(records: Iterable[OclpRecord]) -> None:
                 input_digest = _require_reference(
                     reference,
                     by_digest,
-                    expected_kind="artifact",
+                    expected_kind=("artifact", "artifact_set"),
                     label=f"Invocation {record.id} input {port!r}",
                 )
                 adjacency[input_digest].add(invocation_digest)
