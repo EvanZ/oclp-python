@@ -49,6 +49,12 @@ revision. An Artifact also has a content digest for the bytes it describes.
 Applications should publish `RecordReference` values with a digest whenever an
 exact immutable revision is required.
 
+An Artifact or ArtifactSet may include `created_at` when its producer can
+assert the time it created that exact immutable record/materialization. It is
+not a source-file mtime, object-store upload, or viewer observation time. Omit
+it when unknown; use `LifecycleEvent.occurred_at` for execution and publication
+chronology.
+
 ```python
 from oclp import record_digest
 from oclp.models import RecordReference

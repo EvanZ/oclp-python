@@ -11,6 +11,7 @@ from pydantic import (
     Field,
     JsonValue,
     TypeAdapter,
+    field_validator,
     model_validator,
 )
 
@@ -158,8 +159,16 @@ class Artifact(CoreRecord):
     media_type: str = Field(min_length=1)
     digest: Digest
     size: int = Field(ge=0)
+    created_at: datetime | None = None
     locations: tuple[str, ...] = ()
     schema_uri: str | None = None
+
+    @field_validator("created_at")
+    @classmethod
+    def created_at_has_explicit_offset(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("artifact created_at must include a UTC offset")
+        return value
 
     @model_validator(mode="after")
     def identifier_is_independent_of_content_digest(self) -> Artifact:
@@ -190,6 +199,14 @@ class ArtifactSet(CoreRecord):
 
     kind: Literal["artifact_set"] = "artifact_set"
     members: tuple[ArtifactSetMember, ...] = Field(min_length=1)
+    created_at: datetime | None = None
+
+    @field_validator("created_at")
+    @classmethod
+    def created_at_has_explicit_offset(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("artifact set created_at must include a UTC offset")
+        return value
 
     @model_validator(mode="after")
     def member_names_are_unique(self) -> ArtifactSet:

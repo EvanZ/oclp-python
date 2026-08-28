@@ -25,6 +25,8 @@ An `Artifact` describes immutable content. Its logical `id` is distinct from
 the SHA-256 `digest` of the content bytes.
 
 ```python
+from datetime import UTC, datetime
+
 from oclp import Artifact, canonical_json_bytes, record_digest
 from oclp.models import Digest
 
@@ -34,6 +36,7 @@ artifact = Artifact(
     media_type="application/json",
     digest=Digest(value="a" * 64),
     size=42,
+    created_at=datetime.now(UTC),
     locations=("s3://example-reports/daily.json",),
 )
 
