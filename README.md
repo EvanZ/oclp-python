@@ -43,3 +43,11 @@ service. Applications decide when to create records; consumers such as
 The `duckdb` extra supplies a simple local catalog for resolving
 content-bound records and their locations. It is optional implementation
 infrastructure, not a requirement of the OCLP standard.
+
+## End-to-end example
+
+The [bike-demand service demo](examples/bike-demand-service/README.md) is a
+staged, self-contained consumer project for returning to an end-to-end OCLP
+design: source data, feature preparation, temporal model folds, evaluation,
+model release packaging, and FastAPI inference. It has its own dependencies so
+the SDK's core installation remains small.

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Dataset downloads, feature materializations, model releases, and OCLP stores
+# are generated locally by the future pipeline.
+data/*
+!data/.gitignore

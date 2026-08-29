@@ -1,0 +1,3 @@
+# Keep this directory in Git while ignoring locally downloaded and generated data.
+*
+!.gitignore
