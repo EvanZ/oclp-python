@@ -34,4 +34,6 @@ application or ecosystem concerns that can produce and consume the same OCLP
 records.
 
 Start with [getting started](getting-started.md), then see [records and
-canonicalization](records.md) for the core SDK operations.
+canonicalization](records.md) for the core SDK operations. For a complete
+consumer implementation with CatBoost, a local DuckDB catalog, and parallel
+MLflow experiment tracking, see the [end-to-end bike-demand example](bike-demand-example.md).

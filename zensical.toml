@@ -10,6 +10,7 @@ nav = [
   {"Getting started" = "getting-started.md"},
   {"Using the SDK" = [
     {"Instrument a computation" = "instrumenting-computations.md"},
+    {"End-to-end ML example" = "bike-demand-example.md"},
     {"Records and canonicalization" = "records.md"},
     {"DuckDB catalog" = "catalog.md"},
     {"Conformance" = "conformance.md"},

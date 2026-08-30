@@ -10,9 +10,10 @@ SDK's core installation.
 
 ## Status
 
-**Scaffold only.** The project structure, dependencies, intended OCLP
-boundaries, and command entry point are in place. It intentionally does not
-download data, train a model, or start a service yet.
+**Batch milestone implemented.** The `run` command downloads the UCI source
+data, builds leakage-safe time-ordered folds, trains CatBoost models, evaluates
+and packages a release, and scores an untouched holdout. The FastAPI inference
+service remains a later milestone.
 
 ## Dataset
 
@@ -27,9 +28,9 @@ avoid leakage.
 ```text
 raw dataset Artifact
   -> feature DatasetSnapshot + fold-definition Artifact
-  -> parent training run
+  -> parent training-lifecycle Invocation
        -> child fold-training Invocations
-       -> fold models and holdout predictions
+       -> evaluation, final-training, packaging, and holdout-scoring Invocations
   -> evaluation Evidence and metrics Artifact
   -> model-release ArtifactSet
   -> offline holdout inference
@@ -51,14 +52,39 @@ The FastAPI phase will retain all request/response artifacts for this demo. A
 production deployment would generally use asynchronous publication, sampling,
 and redaction rather than synchronously persisting every request.
 
+## MLflow tracking
+
+The batch milestone also uses MLflow as a parallel experiment-tracking view.
+It is not the source of truth for OCLP records or Artifact identity.
+
+- One parent MLflow run mirrors the root model-lifecycle Invocation.
+- Nested MLflow runs mirror the child Invocations, including every fold.
+- MLflow records tunable parameters, per-fold and aggregate metrics, and
+  human-oriented charts or reports.
+- Every MLflow run is tagged with the corresponding OCLP Invocation and
+  Definition identities and digests.
+- MLflow will log a small OCLP reference manifest, rather than duplicate model
+  or dataset bytes that are already published as canonical OCLP Artifacts.
+
+The initial demo will use local MLflow metadata and artifacts under
+`data/mlflow/`. This makes the MLflow UI easy to start without a service, while
+leaving the OCLP DuckDB store independently inspectable in Cyclops.
+
+MLflow is useful here for experiment comparison. FastAPI request monitoring is
+a later concern and is better demonstrated with request-scoped OCLP records
+and an operational exporter such as OpenTelemetry.
+
 ## Layout
 
 ```text
 examples/bike-demand-service/
   data/                       # local downloads and generated records; ignored
   src/bike_demand_service/
-    pipeline.py               # declared computation boundaries
-    cli.py                    # scaffolding command
+    data.py                   # UCI access and time-ordered feature preparation
+    modeling.py               # CatBoost training, evaluation, and holdout scoring
+    runner.py                 # OCLP publication and nested MLflow instrumentation
+    tracking.py               # local MLflow settings and OCLP run correlation
+    cli.py                    # `status` and executable `run` commands
     service.py                # future FastAPI application factory
   tests/                      # future contract and integration tests
   pyproject.toml              # demo-only dependencies and local SDK binding
@@ -72,21 +98,35 @@ path. From this directory:
 ```bash
 uv sync
 uv run bike-demand status
+uv run bike-demand run --run-id bike-demand-first-run
 ```
 
-The second command currently prints the planned stages. Later commands will
-run the batch pipeline, score the holdout, start the FastAPI server, and open
-the generated OCLP store in Cyclops.
+The first command creates an isolated demo environment. The `status` command
+prints the computation boundaries; `run` performs the complete batch lifecycle
+and writes only ignored local data beneath `data/`.
+
+After a run, inspect the resulting records in Cyclops:
+
+```bash
+oclp-explorer --oclp-dir "$(pwd)/data/oclp"
+```
+
+Or start MLflow's local UI against the independent SQLite tracking database:
+
+```bash
+uv run mlflow ui --backend-store-uri "sqlite:///$(pwd)/data/mlflow/mlflow.db"
+```
+
+MLflow does not receive the CatBoost model, dataset, or prediction payload
+bytes. It receives parameters, metrics, and `oclp/record-links.json`, which
+links each MLflow run to exact OCLP record IDs and digests.
 
 ## Implementation sequence
 
-1. Ingest the dataset and publish the raw Artifact.
-2. Build leakage-safe features, a DatasetSnapshot, and time-ordered fold
-   definition.
-3. Train CatBoost models in child fold Invocations and evaluate the candidate.
-4. Publish a model-release ArtifactSet and score an offline holdout set.
-5. Add a FastAPI prediction endpoint with asynchronous OCLP instrumentation.
-6. Point Cyclops at the local store and document the complete graph.
+1. Add a FastAPI prediction endpoint with asynchronous OCLP instrumentation.
+2. Add request-volume sampling, redaction, and OpenTelemetry delivery for the
+   service boundary.
+3. Point Cyclops at the local store and document the complete graph.
 
 No new OCLP Core model profile is required for the first implementation. Any
 model-specific contract should begin as an example-owned, versioned profile or

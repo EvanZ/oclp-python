@@ -31,7 +31,7 @@ PLANNED_STAGES = (
         name="Train fold model",
         definition_id="urn:oclp-bike-demand:definition:train-fold-model",
         description=(
-            "Run one child Invocation per temporal fold and publish model outputs."
+            "Run one child Invocation and nested MLflow run per temporal fold."
         ),
     ),
     PlannedStage(
