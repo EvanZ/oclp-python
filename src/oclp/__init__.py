@@ -1,6 +1,12 @@
 """Reference SDK for the Open Computation Lifecycle Protocol."""
 
 from oclp.canonical import canonical_json_bytes, record_digest
+from oclp.definitions import (
+    DefinitionTemplate,
+    definition,
+    definition_record,
+    definition_template,
+)
 from oclp.models import (
     Artifact,
     ArtifactSet,
@@ -31,6 +37,7 @@ __all__ = [
     "ArtifactSet",
     "ArtifactSetMember",
     "ComputationDefinition",
+    "DefinitionTemplate",
     "Diagnostic",
     "DerivationValidationError",
     "Evidence",
@@ -43,6 +50,9 @@ __all__ = [
     "OpaqueSource",
     "ServiceSource",
     "canonical_json_bytes",
+    "definition",
+    "definition_record",
+    "definition_template",
     "parse_record",
     "record_digest",
     "validate_derivation_graph",

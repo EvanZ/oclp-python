@@ -8,12 +8,23 @@ It lives beside the Python SDK so it can dogfood the SDK as a real consumer,
 without making CatBoost, FastAPI, or data-science dependencies part of the
 SDK's core installation.
 
+The published SDK documentation includes a full [bike-demand reference-project
+guide](https://evanz.github.io/oclp-python/bike-demand-example/)
+that explains the computation boundaries and the OCLP records this project
+publishes.
+
 ## Status
 
 **Batch milestone implemented.** The `run` command downloads the UCI source
 data, builds leakage-safe time-ordered folds, trains CatBoost models, evaluates
 and packages a release, and scores an untouched holdout. The FastAPI inference
 service remains a later milestone.
+
+Every reusable computation declares an OCLP Definition beside its real Python
+function with `@oclp.definition`. The runner keeps runtime observation explicit:
+it materializes payload bytes as Artifacts, binds them into Invocations, and
+publishes lifecycle Events and contract Evidence. The decorator is therefore
+helpful metadata—not an opaque pipeline framework or automatic tracer.
 
 ## Dataset
 

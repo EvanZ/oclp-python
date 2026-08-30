@@ -12,9 +12,9 @@ This page explains how to apply them from Python.
 ## What the SDK does today
 
 The SDK provides strict record models, canonical JSON and digests, graph
-validation, profile helpers, and an optional local `DuckdbCatalog`. It does
-**not** currently include an `@oclp.task` decorator, a runtime tracer, or a
-generic application-instrumentation helper.
+validation, profile helpers, an optional local `DuckdbCatalog`, and a narrow
+`@oclp.definition` declaration decorator. It does **not** include an
+`@oclp.task` runtime tracer or a generic automatic-instrumentation helper.
 
 That is deliberate for now. A decorator can observe function entry and exit,
 but it cannot determine, without application policy:
@@ -30,6 +30,46 @@ The NBA dogfood application makes those choices in small adapters beside its
 domain boundaries: `season/oclp.py` for processing a game,
 `modeling/oclp.py` for RAPM training, and `web_api/oclp_inference.py` for a
 model-serving evaluation. Each adapter is ordinary explicit Python code.
+
+## Declare a Definition beside its callable
+
+`@oclp.definition` is deliberately limited to static Definition metadata. It
+attaches a logical Definition ID, display name, and port contracts to a real
+module-level callable, without wrapping the function or changing how it is
+called. At publication time, `definition_record` adds the source actually used
+for the run and derives the Python locator from the function itself.
+
+```python
+from oclp import GitSource, definition, definition_record
+from oclp.models import PortDefinition
+
+
+@definition(
+    id="urn:example:definition:normalize-report",
+    name="Normalize report",
+    input_ports=(PortDefinition(name="source", media_types=("application/json",)),),
+    output_ports=(PortDefinition(name="report", media_types=("application/json",)),),
+)
+def normalize_report(source: dict[str, object]) -> dict[str, object]:
+    return {"title": str(source["title"]).strip()}
+
+
+report_definition = definition_record(
+    normalize_report,
+    source=GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        path="src/reports/normalize.py",
+    ),
+)
+
+assert report_definition.implementation.locator == "reports.normalize.normalize_report"
+```
+
+The decorator prevents a hand-written locator from drifting away from its
+implementation. It cannot determine the actual input or output Artifacts, a
+meaningful run ID, or the test behind Evidence; those remain explicit
+application responsibilities.
 
 ## The observation sequence
 

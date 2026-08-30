@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -13,11 +14,17 @@ from oclp import (
     ArtifactSetMember,
     Evidence,
     Invocation,
+    definition,
     record_digest,
     validate_derivation_graph,
     validate_invocation_hierarchy,
 )
-from oclp.models import ComputationDefinition, ContractReference, RecordReference
+from oclp.models import (
+    ComputationDefinition,
+    ContractReference,
+    PortDefinition,
+    RecordReference,
+)
 from oclp.profiles import DatasetSnapshotManifest, DatasetSnapshotPartition
 
 from bike_demand_service.data import (
@@ -60,6 +67,13 @@ class DemoRunResult:
     mlflow_tracking_uri: str
 
 
+@definition(
+    id="urn:oclp-bike-demand:definition:run-bike-demand-model-lifecycle",
+    name="Run bike-demand model lifecycle",
+    output_ports=(
+        PortDefinition(name="training_plan", media_types=("application/json",)),
+    ),
+)
 def run_demo(*, run_id: str, paths: DemoPaths | None = None) -> DemoRunResult:
     """Execute the batch milestone without making OCLP or MLflow the other.
 
@@ -71,7 +85,10 @@ def run_demo(*, run_id: str, paths: DemoPaths | None = None) -> DemoRunResult:
     _validate_run_id(run_id)
     paths = paths or DemoPaths.default()
     paths.prepare()
-    definitions_by_key = definitions(paths.project_root)
+    definitions_by_key = definitions(
+        paths.project_root,
+        functions=_definition_functions(),
+    )
     mlflow_settings = MLflowSettings(paths.mlflow_root)
     mlflow = configure_mlflow(mlflow_settings)
 
@@ -395,37 +412,14 @@ def run_demo(*, run_id: str, paths: DemoPaths | None = None) -> DemoRunResult:
                 _ = final_train_ref
 
             package_started_at = utc_now()
-            model_release = ArtifactSet(
-                id=f"urn:oclp-bike-demand:artifact-set:model-release:{run_id}",
-                name=f"Bike-demand CatBoost release — {run_id}",
+            model_release = package_model_release(
+                run_id=run_id,
+                model=final_model_artifact.reference,
+                feature_contract=feature_contract.reference,
+                evaluation=evaluation_artifact.reference,
+                training_config=training_config.reference,
+                dataset_snapshot=snapshot.reference,
                 created_at=utc_now(),
-                members=(
-                    ArtifactSetMember(
-                        name="model",
-                        artifact=final_model_artifact.reference,
-                        role="model",
-                    ),
-                    ArtifactSetMember(
-                        name="feature-contract",
-                        artifact=feature_contract.reference,
-                        role="serving-contract",
-                    ),
-                    ArtifactSetMember(
-                        name="temporal-evaluation",
-                        artifact=evaluation_artifact.reference,
-                        role="validation-report",
-                    ),
-                    ArtifactSetMember(
-                        name="training-config",
-                        artifact=training_config.reference,
-                        role="training-config",
-                    ),
-                    ArtifactSetMember(
-                        name="feature-dataset-snapshot",
-                        artifact=snapshot.reference,
-                        role="training-data",
-                    ),
-                ),
             )
             model_release_ref = publisher.publish(model_release)
             package_ref = _publish_stage(
@@ -518,6 +512,74 @@ def run_demo(*, run_id: str, paths: DemoPaths | None = None) -> DemoRunResult:
         oclp_root=str(paths.oclp_root),
         mlflow_tracking_uri=mlflow_settings.tracking_uri,
     )
+
+
+@definition(
+    id="urn:oclp-bike-demand:definition:package-model-release",
+    name="Package bike-demand model release",
+    input_ports=(
+        PortDefinition(name="model"),
+        PortDefinition(name="feature_contract", media_types=("application/json",)),
+        PortDefinition(name="evaluation", media_types=("application/json",)),
+        PortDefinition(name="training_config", media_types=("application/json",)),
+    ),
+    output_ports=(PortDefinition(name="model_release"),),
+)
+def package_model_release(
+    *,
+    run_id: str,
+    model: RecordReference,
+    feature_contract: RecordReference,
+    evaluation: RecordReference,
+    training_config: RecordReference,
+    dataset_snapshot: RecordReference,
+    created_at: datetime,
+) -> ArtifactSet:
+    """Assemble the exact Artifacts that make a serving-ready model release."""
+
+    return ArtifactSet(
+        id=f"urn:oclp-bike-demand:artifact-set:model-release:{run_id}",
+        name=f"Bike-demand CatBoost release — {run_id}",
+        created_at=created_at,
+        members=(
+            ArtifactSetMember(name="model", artifact=model, role="model"),
+            ArtifactSetMember(
+                name="feature-contract",
+                artifact=feature_contract,
+                role="serving-contract",
+            ),
+            ArtifactSetMember(
+                name="temporal-evaluation",
+                artifact=evaluation,
+                role="validation-report",
+            ),
+            ArtifactSetMember(
+                name="training-config",
+                artifact=training_config,
+                role="training-config",
+            ),
+            ArtifactSetMember(
+                name="feature-dataset-snapshot",
+                artifact=dataset_snapshot,
+                role="training-data",
+            ),
+        ),
+    )
+
+
+def _definition_functions() -> dict[str, Callable[..., object]]:
+    """Return the concrete decorated callables that form this application."""
+
+    return {
+        "lifecycle": run_demo,
+        "ingest": download_source_data,
+        "prepare": prepare_features,
+        "train_fold": train_fold,
+        "evaluate": evaluate_folds,
+        "train_final": train_final_model,
+        "package": package_model_release,
+        "score": score_holdout,
+    }
 
 
 def _publish_stage(

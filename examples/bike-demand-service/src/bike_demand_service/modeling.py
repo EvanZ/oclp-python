@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 from catboost import CatBoostRegressor
+from oclp import definition
+from oclp.models import PortDefinition
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from bike_demand_service.data import (
@@ -30,6 +32,19 @@ class FoldResult:
     metrics: dict[str, float | int]
 
 
+@definition(
+    id="urn:oclp-bike-demand:definition:train-fold-model",
+    name="Train bike-demand fold model",
+    input_ports=(
+        PortDefinition(name="dataset_snapshot", media_types=("application/json",)),
+        PortDefinition(name="fold_definition", media_types=("application/json",)),
+    ),
+    output_ports=(
+        PortDefinition(name="model"),
+        PortDefinition(name="validation_predictions"),
+        PortDefinition(name="metrics", media_types=("application/json",)),
+    ),
+)
 def train_fold(
     frame: pd.DataFrame,
     fold: dict[str, str | int],
@@ -72,6 +87,23 @@ def train_fold(
     )
 
 
+@definition(
+    id="urn:oclp-bike-demand:definition:evaluate-candidate",
+    name="Evaluate bike-demand candidate",
+    input_ports=(
+        PortDefinition(name="fold_models", cardinality="many"),
+        PortDefinition(name="fold_predictions", cardinality="many"),
+        PortDefinition(
+            name="fold_metrics",
+            cardinality="many",
+            media_types=("application/json",),
+        ),
+    ),
+    output_ports=(
+        PortDefinition(name="evaluation", media_types=("application/json",)),
+        PortDefinition(name="training_config", media_types=("application/json",)),
+    ),
+)
 def evaluate_folds(results: tuple[FoldResult, ...]) -> dict[str, float | int | str]:
     """Aggregate exactly the validation results used for candidate selection."""
 
@@ -84,6 +116,15 @@ def evaluate_folds(results: tuple[FoldResult, ...]) -> dict[str, float | int | s
     return metrics
 
 
+@definition(
+    id="urn:oclp-bike-demand:definition:train-final-model",
+    name="Train final bike-demand model",
+    input_ports=(
+        PortDefinition(name="dataset_snapshot", media_types=("application/json",)),
+        PortDefinition(name="training_config", media_types=("application/json",)),
+    ),
+    output_ports=(PortDefinition(name="model"),),
+)
 def train_final_model(frame: pd.DataFrame, *, model_path: Path) -> CatBoostRegressor:
     """Fit the release candidate on every row before the untouched holdout."""
 
@@ -99,6 +140,18 @@ def train_final_model(frame: pd.DataFrame, *, model_path: Path) -> CatBoostRegre
     return model
 
 
+@definition(
+    id="urn:oclp-bike-demand:definition:predict-bike-demand",
+    name="Score bike-demand holdout set",
+    input_ports=(
+        PortDefinition(name="model_release"),
+        PortDefinition(name="dataset_snapshot", media_types=("application/json",)),
+    ),
+    output_ports=(
+        PortDefinition(name="predictions"),
+        PortDefinition(name="metrics", media_types=("application/json",)),
+    ),
+)
 def score_holdout(
     model: CatBoostRegressor, frame: pd.DataFrame
 ) -> tuple[pd.DataFrame, dict[str, float | int]]:

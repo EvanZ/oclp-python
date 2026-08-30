@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
+from oclp import definition
+from oclp.models import PortDefinition
 from sklearn.model_selection import TimeSeriesSplit
 from ucimlrepo import fetch_ucirepo
 
@@ -47,6 +49,11 @@ class PreparedFeatures:
     feature_contract: dict[str, object]
 
 
+@definition(
+    id="urn:oclp-bike-demand:definition:ingest-source-data",
+    name="Ingest bike-demand source data",
+    output_ports=(PortDefinition(name="raw_dataset"),),
+)
 def download_source_data() -> pd.DataFrame:
     """Retrieve UCI's hourly Bike Sharing data as a single ordered table."""
 
@@ -60,6 +67,17 @@ def download_source_data() -> pd.DataFrame:
     return frame
 
 
+@definition(
+    id="urn:oclp-bike-demand:definition:prepare-features",
+    name="Prepare bike-demand features and folds",
+    input_ports=(PortDefinition(name="raw_dataset"),),
+    output_ports=(
+        PortDefinition(name="features"),
+        PortDefinition(name="dataset_snapshot", media_types=("application/json",)),
+        PortDefinition(name="fold_definition", media_types=("application/json",)),
+        PortDefinition(name="feature_contract", media_types=("application/json",)),
+    ),
+)
 def prepare_features(source: pd.DataFrame, *, fold_count: int = 3) -> PreparedFeatures:
     """Create time-ordered folds while excluding target-derived leakage fields."""
 
