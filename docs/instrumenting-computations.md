@@ -35,9 +35,12 @@ rewrite an OCLP record.
 An `@evidence` evaluator defines a reusable, source-bound validation gate. It
 returns exactly one outcome—`"pass"`, `"fail"`, or `"error"`—for one
 application-owned rule. The runtime creates the single core Evidence record
-from that outcome. A `@computation` names an ordinary callable and can directly
-require that evaluator—there is no separate ID/version reference or
-requirement wrapper.
+from that outcome. Passing Evidence has no Diagnostic; a returned `"fail"` or
+`"error"` receives a compact SDK Diagnostic with a stable OCLP code and
+validation-stage message. An evaluator exception records its exception type and
+message as an evaluation-stage Diagnostic. A `@computation` names an ordinary
+callable and can directly require that evaluator—there is no separate
+ID/version reference or requirement wrapper.
 
 ```python
 from oclp import computation, evidence
@@ -280,7 +283,6 @@ def download_parquet() -> pd.DataFrame:
 @json_artifact(
     id="urn:example:artifact:uci-hourly:275:json",
     name="UCI source (pandas table JSON)",
-    schema_uri="urn:example:schema:pandas-dataframe-table-json:v1",
     serialization="pandas-table",
 )
 def download_json() -> pd.DataFrame:
@@ -341,7 +343,7 @@ location that does not match the materialization.
 | `size` | SDK byte count | It must describe the real payload. |
 | `created_at` | SDK materialization timestamp | It records when this immutable payload was created. |
 | `locations` | Active store's resulting payload URI | A location is a property of a particular storage implementation. |
-| `schema_uri` | Optional `schema_uri=` decorator argument | Declares the schema expected for the persisted representation. |
+| `schema_uri` | Optional `schema_uri=` decorator argument; default `null` | Declare it only when the application publishes a real, versioned schema for the persisted representation. Do not invent a URI merely to label a format. |
 | `profiles`, `annotations` | Optional decorator arguments | Declare extension-profile bindings and portable application metadata. |
 
 `index`, `lineterminator`, `na_rep`, `float_format`, `date_format`, and
@@ -358,7 +360,6 @@ bytes and therefore the digest.
     index=False,                                      # do not write DataFrame index
     lineterminator="\n",                             # platform-independent bytes
     columns=("timestamp", "temperature", "demand"), # intentional CSV projection
-    schema_uri="urn:example:schema:bike-demand:v1",   # representation contract
     annotations={"source": "UCI"},                   # portable application metadata
 )
 def download_source_csv(dataset_id: int = 275) -> pd.DataFrame:
@@ -401,7 +402,6 @@ from oclp.publishing import LocalArtifactPublisher
             name="Fetched report snapshot",
             key="report-source",
             path="reports/source.csv",
-            schema_uri="urn:example:schema:report:v1",
         ),
     },
 )

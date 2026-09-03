@@ -98,7 +98,6 @@ def download_source_parquet(
         f"urn:oclp-bike-demand:artifact:uci-bike-sharing-hourly:{dataset_id}:json"
     ),
     name="UCI Bike Sharing source (JSON)",
-    schema_uri="urn:oclp-python:schema:pandas-dataframe-table-json:v1",
     serialization="pandas-table",
 )
 def download_source_json(
@@ -142,7 +141,6 @@ def download_source_artifact(
             name="Bike demand features",
             key="feature-table",
             path="prepared/features.csv",
-            schema_uri="urn:oclp-bike-demand:schema:feature-table:v1",
         ),
         "fold_definition": JsonArtifact(
             name="Temporal fold definition",

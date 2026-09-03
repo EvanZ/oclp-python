@@ -75,18 +75,26 @@ with warnings.catch_warnings():
 
 
 class GitSource(OclpModel):
-    """An immutable Git source revision selected by an implementation."""
+    """A Git source basis selected by an implementation.
+
+    ``commit`` is always the immutable base revision.  ``dirty`` makes an
+    observed local checkout with uncommitted changes explicit; a producer can
+    additionally bind an exact ``overlay`` when those changes are captured.
+    """
 
     kind: Literal["git"] = "git"
     repository: str = Field(min_length=1)
     commit: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
     path: str = Field(default=".", min_length=1)
+    dirty: bool = Field(default=False, exclude_if=lambda value: not value)
     overlay: RecordReference | None = None
 
     @model_validator(mode="after")
     def overlay_is_content_bound(self) -> GitSource:
         if self.overlay is not None and self.overlay.digest is None:
             raise ValueError("git source overlays must include a record digest")
+        if self.overlay is not None and not self.dirty:
+            raise ValueError("git source overlays require dirty=true")
         return self
 
 

@@ -77,6 +77,12 @@ with LocalArtifactPublisher(
         )
 ```
 
+`source_from_git_checkout()` does not reject a development checkout with local
+changes. It returns a `GitSource` with `dirty: true`, retaining the current
+commit as the reviewed base revision. That makes the observation useful and
+honest, while signalling that the source cannot be reproduced from the commit
+alone unless the application also publishes an explicit source overlay.
+
 Every real Execution created by the active runtime receives:
 
 ```json

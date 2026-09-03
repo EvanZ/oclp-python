@@ -75,7 +75,6 @@ class PredictionResponse(BaseModel):
 @json_artifact(
     id=lambda *, request_id: f"{_NAMESPACE}:artifact:inference-request:{request_id}",
     name="Bike demand prediction request",
-    schema_uri="urn:oclp-bike-demand:schema:prediction-request:v1",
 )
 def persist_prediction_request(
     *, request_id: str, payload: dict[str, object]
@@ -118,7 +117,6 @@ def prediction_response_validation(
     outputs={
         "prediction_response": JsonArtifact(
             name="Bike demand prediction response",
-            schema_uri="urn:oclp-bike-demand:schema:prediction-response:v1",
         ),
     },
     requires=(prediction_response_validation,),
@@ -172,7 +170,7 @@ def create_app(
     release = load_release_manifest(release_manifest_path)
     source = source_from_git_checkout(
         environment.project_root,
-        path="src/bike_demand_service/service.py",
+        path="examples/bike-demand-service/src/bike_demand_service/service.py",
     )
     app = FastAPI(
         title="OCLP bike-demand inference demo",

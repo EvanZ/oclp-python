@@ -713,7 +713,28 @@ def test_evidence_decorator_evaluates_and_binds_the_source_bound_evaluator() -> 
     )
 
     assert record.outcome == "pass"
+    assert record.diagnostic is None
     assert record.evaluator == evidence_implementation(quality_gate, source=source)
+
+
+def test_evidence_decorator_explains_a_failed_outcome() -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    record = evaluate_evidence(
+        quality_gate,
+        0,
+        subject=RecordReference(id="urn:example:execution:test"),
+        source=source,
+        id="urn:example:evidence:quality:failed",
+        observed_at="2026-08-30T18:00:00Z",
+    )
+
+    assert record.outcome == "fail"
+    assert record.diagnostic is not None
+    assert record.diagnostic.code == "oclp/evidence-failed"
+    assert record.diagnostic.stage == "validation"
 
 
 @evidence(name="Broken summary check")

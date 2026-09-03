@@ -13,6 +13,7 @@ from oclp import (
     ArtifactSetMember,
     Computation,
     Execution,
+    GitSource,
     canonical_json_bytes,
     parse_record,
     record_digest,
@@ -139,6 +140,28 @@ def test_computation_omits_absent_evidence_requirements_from_canonical_json() ->
 
     assert computation.required_evidence is None
     assert b'"required_evidence"' not in canonical_json_bytes(computation)
+
+
+def test_git_source_overlay_requires_an_explicit_dirty_marker() -> None:
+    overlay = RecordReference(
+        id="urn:example:artifact-set:source-overlay",
+        digest=Digest(value="a" * 64),
+    )
+
+    with pytest.raises(ValidationError, match="dirty=true"):
+        GitSource(
+            repository="https://github.com/example/reports.git",
+            commit="b" * 40,
+            overlay=overlay,
+        )
+
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="b" * 40,
+        dirty=True,
+        overlay=overlay,
+    )
+    assert source.dirty is True
 
 
 def test_profiles_are_a_typed_contract_surface_distinct_from_annotations() -> None:

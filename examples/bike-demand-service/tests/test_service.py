@@ -133,6 +133,8 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
         "prediction": body["prediction"],
         "request_id": body["request_id"],
     }
+    assert request_artifact.schema_uri is None
+    assert response_artifact.schema_uri is None
     evidence = [
         record
         for record in records
@@ -154,7 +156,6 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     assert [(event.event_type, event.status) for event in events] == [
         ("execution-started", None),
         ("artifacts-published", None),
-        ("evidence-published", None),
         ("execution-terminal", "succeeded"),
     ]
 

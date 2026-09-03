@@ -453,10 +453,9 @@ Artifact and the entire `ArtifactSetHandle` as a `model_release` input. It
 explicitly materializes the release's model and feature-contract members, so
 the emitted Execution records a real ArtifactSet → Execution edge rather than
 an untracked release ID parameter. The SDK persists the JSON prediction
-response and emits the normal `execution-started`, `artifacts-published`,
-`evidence-published`, and terminal `Event` records. `Prediction response
-validation` is the same required Evidence gate used by the release inference
-smoke test.
+response and emits the normal `execution-started`, `artifacts-published`, and
+terminal `Event` records. `Prediction response validation` is the same required
+Evidence gate used by the release inference smoke test.
 
 This is intentionally correctness-first: every request reloads the verified
 model Artifact and records both payloads under `data/inference/`. It proves the

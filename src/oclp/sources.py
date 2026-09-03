@@ -15,14 +15,17 @@ def source_from_git_checkout(
 ) -> GitSource | OpaqueSource:
     """Resolve the checked-out Git revision that supplies an implementation.
 
-    A source record needs a retrievable repository and immutable commit.  When
-    either cannot be read from the checkout, return an explicit
-    :class:`OpaqueSource` rather than inventing source provenance.
+    A source record needs a retrievable repository and immutable base commit.
+    A checkout with uncommitted changes remains a valid source basis and is
+    explicitly represented with ``dirty=True``.  When the repository or commit
+    cannot be read, return an explicit :class:`OpaqueSource` rather than
+    inventing source provenance.
     """
 
     try:
         commit = _git_output(project_root, "rev-parse", "HEAD")
         repository = _git_output(project_root, "config", "--get", "remote.origin.url")
+        dirty = bool(_git_output(project_root, "status", "--porcelain"))
     except (OSError, subprocess.CalledProcessError):
         return OpaqueSource(
             reason="Git source metadata was unavailable at observation time."
@@ -31,7 +34,12 @@ def source_from_git_checkout(
         return OpaqueSource(
             reason="Git source metadata has no configured remote.origin.url."
         )
-    return GitSource(repository=repository, commit=commit, path=path)
+    return GitSource(
+        repository=repository,
+        commit=commit,
+        path=path,
+        dirty=dirty,
+    )
 
 
 def _git_output(project_root: Path, *arguments: str) -> str:

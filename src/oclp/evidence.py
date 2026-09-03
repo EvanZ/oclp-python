@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal, TypeVar
+from typing import Literal, TypeVar, cast
 
 from pydantic import Field, JsonValue
 
@@ -134,13 +134,37 @@ def evaluate_evidence(
             observed_at=observed_at,
             error=error,
         )
+    outcome = cast(Literal["pass", "fail", "error"], result)
+    diagnostic = _outcome_diagnostic(outcome, template.name)
     return Evidence(
         id=id,
         name=name or template.name,
         subject=subject,
         evaluator=evaluator,
-        outcome=result,
+        outcome=outcome,
         observed_at=observed_at,
+        diagnostic=diagnostic,
+    )
+
+
+def _outcome_diagnostic(
+    outcome: Literal["pass", "fail", "error"],
+    evaluator_name: str,
+) -> Diagnostic | None:
+    """Explain non-passing evaluator outcomes without extra application ceremony."""
+
+    if outcome == "pass":
+        return None
+    if outcome == "fail":
+        return Diagnostic(
+            code="oclp/evidence-failed",
+            message=f"{evaluator_name} reported fail.",
+            stage="validation",
+        )
+    return Diagnostic(
+        code="oclp/evidence-error-outcome",
+        message=f"{evaluator_name} reported error.",
+        stage="validation",
     )
 
 

@@ -604,7 +604,6 @@ class OclpRun:
             execution=execution,
             execution_ref=execution_ref,
             started_at=started_at,
-            evidence=emitted_evidence,
             status=status,
         )
         output_handles = {
@@ -883,7 +882,6 @@ class OclpRun:
         execution: Execution,
         execution_ref: RecordReference,
         started_at: datetime,
-        evidence: tuple[Evidence, ...],
         status: str,
     ) -> None:
         prefix = execution.id.removeprefix(self.namespace + ":execution:")
@@ -906,24 +904,13 @@ class OclpRun:
                 data={"outputs": _references_json(execution.outputs or {})},
             )
         )
-        for index, record in enumerate(evidence, start=2):
-            self.publisher.publish(
-                Event(
-                    id=f"{self.namespace}:event:{prefix}:evidence-{index - 1}",
-                    execution=execution_ref,
-                    event_type="evidence-published",
-                    occurred_at=utc_now(),
-                    sequence=index,
-                    data={"evidence": record.model_dump(mode="json")},
-                )
-            )
         self.publisher.publish(
             Event(
                 id=f"{self.namespace}:event:{prefix}:terminal",
                 execution=execution_ref,
                 event_type="execution-terminal",
                 occurred_at=utc_now(),
-                sequence=2 + len(evidence),
+                sequence=2,
                 status=status,
             )
         )

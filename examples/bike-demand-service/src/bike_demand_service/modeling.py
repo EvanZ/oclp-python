@@ -95,7 +95,6 @@ def create_training_plan(*, run_id: str, fold_count: int) -> dict[str, object]:
         ),
         "validation_predictions": CsvArtifact(
             name="Validation predictions",
-            schema_uri="urn:oclp-bike-demand:schema:fold-predictions:v1",
         ),
         "metrics": JsonArtifact(
             name="Validation metrics",
