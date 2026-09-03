@@ -25,8 +25,9 @@ from oclp.validation import parse_record
 _RECORD_KINDS = (
     "artifact",
     "artifact_set",
-    "definition",
-    "invocation",
+    "computation",
+    "contract",
+    "execution",
     "evidence",
     "event",
 )
@@ -206,6 +207,19 @@ class DuckdbCatalog:
             ORDER BY record_digest
             """,
             [content.algorithm, content.value],
+        ).fetchall()
+        return tuple(self.get(Digest(value=row[0])) for row in rows)  # type: ignore[return-value]
+
+    def artifacts_for_id(self, artifact_id: str) -> tuple[Artifact, ...]:
+        """Return every immutable Artifact record known for one logical ID."""
+
+        rows = self._connection.execute(
+            """
+            SELECT record_digest FROM oclp_records
+            WHERE record_id = ? AND record_kind = 'artifact'
+            ORDER BY record_digest
+            """,
+            [artifact_id],
         ).fetchall()
         return tuple(self.get(Digest(value=row[0])) for row in rows)  # type: ignore[return-value]
 

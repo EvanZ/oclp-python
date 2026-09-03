@@ -1,6 +1,6 @@
 [project]
 name = "oclp"
-version = "0.1.0a0"
+version = "0.2.0a0"
 description = "Reference Python SDK for the Open Computation Lifecycle Protocol"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,6 +9,7 @@ authors = [
   { name = "Evan Zamir" },
 ]
 dependencies = [
+  "jsonschema>=4.23,<5",
   "pydantic>=2.10,<3",
   "rfc8785>=0.1.4,<1",
 ]
@@ -16,6 +17,37 @@ dependencies = [
 [project.optional-dependencies]
 duckdb = [
   "duckdb>=1.1,<2",
+]
+catboost = [
+  "catboost>=1.2,<2",
+]
+xgboost = [
+  "xgboost>=2.1,<4",
+]
+sklearn = [
+  "scikit-learn>=1.6,<2",
+  "skops>=0.12,<1",
+]
+parquet = [
+  "pyarrow>=18,<24",
+]
+arrow = [
+  "pyarrow>=18,<24",
+]
+numpy = [
+  "numpy>=1.26,<3",
+]
+yaml = [
+  "PyYAML>=6,<7",
+]
+toml = [
+  "tomli-w>=1,<2",
+]
+xml = [
+  "defusedxml>=0.7,<1",
+]
+lightgbm = [
+  "lightgbm>=4.0,<5",
 ]
 
 [project.scripts]

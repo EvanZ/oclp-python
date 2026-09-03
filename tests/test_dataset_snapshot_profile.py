@@ -21,11 +21,12 @@ def _profile_root() -> Path:
 
 
 def test_dataset_snapshot_binding_requires_the_declared_version() -> None:
-    assert DatasetSnapshotBinding.model_validate(
-        {"version": "0.1.0-draft"}
-    ).version == "0.1.0-draft"
+    assert (
+        DatasetSnapshotBinding.model_validate({"version": "0.2.0-draft"}).version
+        == "0.2.0-draft"
+    )
     with pytest.raises(ValidationError):
-        DatasetSnapshotBinding.model_validate({"version": "0.2.0-draft"})
+        DatasetSnapshotBinding.model_validate({"version": "0.1.0-draft"})
 
 
 def _manifest() -> dict[str, object]:

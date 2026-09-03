@@ -1,4 +1,4 @@
-"""Filesystem locations for one local bike-demand demonstration run."""
+"""Local execution environment for the bike-demand demonstration."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
-class DemoPaths:
-    """Resolve durable local paths without placing generated data in source control."""
+class DemoEnvironment:
+    """Resolve local, ignored storage locations for one demonstration run."""
 
     project_root: Path
 
     @classmethod
-    def default(cls) -> DemoPaths:
-        """Create paths rooted at this example project."""
+    def default(cls) -> DemoEnvironment:
+        """Create an environment rooted at this example project."""
 
         return cls(project_root=Path(__file__).resolve().parents[2])
 
@@ -26,9 +26,9 @@ class DemoPaths:
 
     @property
     def oclp_root(self) -> Path:
-        """Return the simple on-disk OCLP record directory."""
+        """Return the local directory holding canonical OCLP records."""
 
-        return self.data_root / "oclp"
+        return self.data_root / "oclp-0.2-evidence"
 
     @property
     def catalog_path(self) -> Path:
@@ -38,17 +38,22 @@ class DemoPaths:
 
     @property
     def mlflow_root(self) -> Path:
-        """Return the local MLflow metadata and report area."""
+        """Return the local MLflow metadata and artifact area."""
 
         return self.data_root / "mlflow"
 
     def run_root(self, run_id: str) -> Path:
-        """Return the artifact payload directory for one immutable observation."""
+        """Return the Artifact payload directory for one immutable observation."""
 
         return self.data_root / "runs" / run_id
 
+    def inference_root(self, request_id: str) -> Path:
+        """Return the local payload directory for one HTTP inference request."""
+
+        return self.data_root / "inference" / request_id
+
     def prepare(self) -> None:
-        """Create local roots before a pipeline writes any durable material."""
+        """Create local roots before a run writes durable material."""
 
         self.oclp_root.mkdir(parents=True, exist_ok=True)
         self.mlflow_root.mkdir(parents=True, exist_ok=True)

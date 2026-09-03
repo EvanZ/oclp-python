@@ -14,7 +14,7 @@ is the [OCLP standard documentation](https://evanz.github.io/open-computation-li
 
 Use the SDK when a Python application needs to describe durable computation
 lineage without adopting an orchestration engine or a hosted provenance
-service. An application chooses when to create `Definition`, `Invocation`,
+service. An application chooses when to create `Computation`, `Execution`,
 `Artifact`, `ArtifactSet`, `Evidence`, and `Event` records. OCLP preserves and
 validates those observations; it does not run the computation.
 
@@ -25,6 +25,14 @@ application code --> oclp records --> catalog / files / registry --> consumers
 
 Cyclops is a separate read-only explorer. It reads published OCLP records but
 does not change how a producer executes a job.
+
+## Optional integrations
+
+The base package has no data-science or model-framework dependency. Install
+only the integrations a project declares—such as `oclp[catboost]` or
+`oclp[xgboost]`. See [Artifact formats and library integrations](integrations.md)
+for the supported representations, their persistence formats, installation
+extras, and compatibility boundaries.
 
 ## Boundaries
 

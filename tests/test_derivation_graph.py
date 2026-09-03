@@ -1,4 +1,4 @@
-"""Tests for the resolved OCLP derivation-DAG contract."""
+"""Tests for the resolved OCLP derivation-DAG and Execution hierarchy."""
 
 from __future__ import annotations
 
@@ -9,104 +9,97 @@ from oclp import (
     Artifact,
     ArtifactSet,
     ArtifactSetMember,
-    ComputationDefinition,
+    Computation,
     DerivationValidationError,
-    Invocation,
+    Execution,
     OrchestrationValidationError,
+    ParameterValidationError,
     record_digest,
     validate_derivation_graph,
-    validate_invocation_hierarchy,
+    validate_execution_hierarchy,
 )
-from oclp.models import Digest, Implementation, RecordReference
+from oclp.models import (
+    Digest,
+    Implementation,
+    ParameterDefinition,
+    RecordReference,
+)
+
+
+def _computation(name: str) -> Computation:
+    return Computation(
+        id=f"urn:example:computation:{name}",
+        implementation=Implementation(
+            kind="other",
+            locator=f"example:{name}",
+            source={"kind": "opaque", "reason": "test fixture"},
+        ),
+    )
 
 
 def test_resolved_input_and_output_bindings_form_a_valid_dag() -> None:
     source = _artifact("source", "a")
     result = _artifact("result", "b")
-    definition = ComputationDefinition(
-        id="urn:example:definition:transform",
-        implementation=Implementation(
-            kind="other",
-            locator="example:transform",
-            source={"kind": "opaque", "reason": "test fixture"},
-        ),
-    )
-    invocation = Invocation(
-        id="urn:example:invocation:transform",
-        definition=_reference(definition),
+    computation = _computation("transform")
+    execution = Execution(
+        id="urn:example:execution:transform",
+        computation=_reference(computation),
         inputs={"source": (_reference(source),)},
         outputs={"result": (_reference(result),)},
     )
 
-    validate_derivation_graph((source, definition, invocation, result))
+    validate_derivation_graph((source, computation, execution, result))
 
 
-def test_invocation_may_publish_an_artifact_set_output() -> None:
+def test_execution_may_publish_an_artifact_set_output() -> None:
     source = _artifact("source", "a")
     result = _artifact("result", "b")
     release = ArtifactSet(
         id="urn:example:artifact-set:release",
         members=(ArtifactSetMember(name="result", artifact=_reference(result)),),
     )
-    definition = ComputationDefinition(
-        id="urn:example:definition:package",
-        implementation=Implementation(
-            kind="other",
-            locator="example:package",
-            source={"kind": "opaque", "reason": "test fixture"},
-        ),
-    )
-    invocation = Invocation(
-        id="urn:example:invocation:package",
-        definition=_reference(definition),
+    computation = _computation("package")
+    execution = Execution(
+        id="urn:example:execution:package",
+        computation=_reference(computation),
         inputs={"source": (_reference(source),)},
-        outputs={
-            "result": (_reference(result),),
-            "release": (_reference(release),),
-        },
+        outputs={"result": (_reference(result),), "release": (_reference(release),)},
     )
 
-    validate_derivation_graph((source, definition, invocation, result, release))
+    validate_derivation_graph((source, computation, execution, result, release))
 
 
-def test_invocation_may_consume_an_artifact_set_input() -> None:
+def test_execution_may_consume_an_artifact_set_input() -> None:
     member = _artifact("model-state", "a")
     package = ArtifactSet(
         id="urn:example:artifact-set:model-package",
         members=(ArtifactSetMember(name="model.joblib", artifact=_reference(member)),),
     )
     result = _artifact("result", "b")
-    definition = ComputationDefinition(
-        id="urn:example:definition:score",
-        implementation=Implementation(
-            kind="other",
-            locator="example:score",
-            source={"kind": "opaque", "reason": "test fixture"},
-        ),
-    )
-    invocation = Invocation(
-        id="urn:example:invocation:score",
-        definition=_reference(definition),
+    computation = _computation("score")
+    execution = Execution(
+        id="urn:example:execution:score",
+        computation=_reference(computation),
         inputs={"model_package": (_reference(package),)},
         outputs={"result": (_reference(result),)},
     )
 
-    validate_derivation_graph((member, package, definition, invocation, result))
+    validate_derivation_graph((member, package, computation, execution, result))
 
 
-def test_invocation_outputs_must_be_content_bound() -> None:
+def test_execution_outputs_must_be_content_bound() -> None:
     with pytest.raises(ValidationError, match="outputs must include record digests"):
-        Invocation(
-            id="urn:example:invocation:transform",
-            definition=RecordReference(id="urn:example:definition:transform"),
+        Execution(
+            id="urn:example:execution:transform",
+            computation=RecordReference(id="urn:example:computation:transform"),
             outputs={"result": (RecordReference(id="urn:example:artifact:result"),)},
         )
 
 
 def test_derivation_validator_rejects_redundant_implementation_digest() -> None:
     source = _artifact("source", "a")
-    definition = ComputationDefinition(
-        id="urn:example:definition:transform",
+    computation = Computation(
+        id="urn:example:computation:transform",
         implementation=Implementation(
             kind="other",
             locator="example:transform",
@@ -117,102 +110,106 @@ def test_derivation_validator_rejects_redundant_implementation_digest() -> None:
     )
 
     with pytest.raises(
-        DerivationValidationError, match="must omit implementation.digest"
+        DerivationValidationError,
+        match="must omit implementation.digest",
     ):
-        validate_derivation_graph((source, definition))
+        validate_derivation_graph((source, computation))
 
 
 def test_derivation_validator_rejects_unresolved_inputs() -> None:
-    definition = ComputationDefinition(
-        id="urn:example:definition:transform",
-        implementation=Implementation(
-            kind="other",
-            locator="example:transform",
-            source={"kind": "opaque", "reason": "test fixture"},
-        ),
-    )
-    invocation = Invocation(
-        id="urn:example:invocation:transform",
-        definition=_reference(definition),
+    computation = _computation("transform")
+    execution = Execution(
+        id="urn:example:execution:transform",
+        computation=_reference(computation),
         inputs={
             "source": (
                 RecordReference(
-                    id="urn:example:artifact:missing",
-                    digest=Digest(value="c" * 64),
+                    id="urn:example:artifact:missing", digest=Digest(value="c" * 64)
                 ),
             )
         },
     )
 
     with pytest.raises(DerivationValidationError, match="does not resolve"):
-        validate_derivation_graph((definition, invocation))
+        validate_derivation_graph((computation, execution))
 
 
 def test_derivation_validator_rejects_a_cycle() -> None:
     source = _artifact("source", "a")
-    definition = ComputationDefinition(
-        id="urn:example:definition:identity",
-        implementation=Implementation(
-            kind="other",
-            locator="example:identity",
-            source={"kind": "opaque", "reason": "test fixture"},
-        ),
-    )
-    invocation = Invocation(
-        id="urn:example:invocation:identity",
-        definition=_reference(definition),
+    computation = _computation("identity")
+    execution = Execution(
+        id="urn:example:execution:identity",
+        computation=_reference(computation),
         inputs={"value": (_reference(source),)},
         outputs={"value": (_reference(source),)},
     )
 
     with pytest.raises(DerivationValidationError, match="contains a cycle"):
-        validate_derivation_graph((source, definition, invocation))
+        validate_derivation_graph((source, computation, execution))
 
 
-def test_invocation_hierarchy_resolves_an_id_only_parent() -> None:
-    definition = ComputationDefinition(
-        id="urn:example:definition:flow",
+def test_derivation_validator_enforces_declared_execution_parameters() -> None:
+    computation = Computation(
+        id="urn:example:computation:parameterized",
         implementation=Implementation(
             kind="other",
-            locator="example:flow",
+            locator="example:parameterized",
             source={"kind": "opaque", "reason": "test fixture"},
         ),
-    )
-    parent = Invocation(
-        id="urn:example:invocation:parent-run",
-        definition=_reference(definition),
-    )
-    child = Invocation(
-        id="urn:example:invocation:child-task",
-        definition=_reference(definition),
-        parent_invocation=RecordReference(id=parent.id),
-    )
-
-    validate_invocation_hierarchy((definition, parent, child))
-
-
-def test_invocation_hierarchy_rejects_a_cycle() -> None:
-    definition = ComputationDefinition(
-        id="urn:example:definition:flow",
-        implementation=Implementation(
-            kind="other",
-            locator="example:flow",
-            source={"kind": "opaque", "reason": "test fixture"},
+        parameter_definitions=(
+            ParameterDefinition(name="fold_number", schema={"type": "integer"}),
+            ParameterDefinition(
+                name="mode",
+                schema={"enum": ["fast", "full"]},
+                required=False,
+            ),
         ),
     )
-    first = Invocation(
-        id="urn:example:invocation:first",
-        definition=_reference(definition),
-        parent_invocation=RecordReference(id="urn:example:invocation:second"),
+    valid = Execution(
+        id="urn:example:execution:parameterized-valid",
+        computation=_reference(computation),
+        parameters={"fold_number": 2, "mode": "fast"},
     )
-    second = Invocation(
-        id="urn:example:invocation:second",
-        definition=_reference(definition),
-        parent_invocation=RecordReference(id=first.id),
+    invalid = Execution(
+        id="urn:example:execution:parameterized-invalid",
+        computation=_reference(computation),
+        parameters={"fold_number": "two"},
+    )
+
+    validate_derivation_graph((computation, valid))
+    with pytest.raises(ParameterValidationError, match="does not satisfy"):
+        validate_derivation_graph((computation, invalid))
+
+
+def test_execution_hierarchy_resolves_an_id_only_parent() -> None:
+    computation = _computation("flow")
+    parent = Execution(
+        id="urn:example:execution:parent-run", computation=_reference(computation)
+    )
+    child = Execution(
+        id="urn:example:execution:child-task",
+        computation=_reference(computation),
+        parent_execution=RecordReference(id=parent.id),
+    )
+
+    validate_execution_hierarchy((computation, parent, child))
+
+
+def test_execution_hierarchy_rejects_a_cycle() -> None:
+    computation = _computation("flow")
+    first = Execution(
+        id="urn:example:execution:first",
+        computation=_reference(computation),
+        parent_execution=RecordReference(id="urn:example:execution:second"),
+    )
+    second = Execution(
+        id="urn:example:execution:second",
+        computation=_reference(computation),
+        parent_execution=RecordReference(id=first.id),
     )
 
     with pytest.raises(OrchestrationValidationError, match="contains a cycle"):
-        validate_invocation_hierarchy((definition, first, second))
+        validate_execution_hierarchy((computation, first, second))
 
 
 def _artifact(name: str, digest_character: str) -> Artifact:

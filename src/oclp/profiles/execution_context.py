@@ -1,4 +1,4 @@
-"""Portable runtime and configuration provenance for one OCLP Invocation."""
+"""Portable runtime and configuration provenance for one OCLP Execution."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pydantic import Field, JsonValue, model_validator
 from oclp.models import OclpModel, RecordReference
 
 EXECUTION_CONTEXT_PROFILE = "execution-context"
-EXECUTION_CONTEXT_PROFILE_VERSION = "0.1.0-draft"
+EXECUTION_CONTEXT_PROFILE_VERSION = "0.2.0-draft"
 
 
 class ExecutionRuntime(OclpModel):
@@ -27,10 +27,10 @@ class ExecutionRuntime(OclpModel):
 
 
 class ExecutionContextManifest(OclpModel):
-    """Canonical profile payload describing an Invocation's execution context."""
+    """Canonical profile payload describing an Execution's execution context."""
 
     oclp_profile: Literal["execution-context"] = EXECUTION_CONTEXT_PROFILE
-    oclp_profile_version: Literal["0.1.0-draft"] = EXECUTION_CONTEXT_PROFILE_VERSION
+    oclp_profile_version: Literal["0.2.0-draft"] = EXECUTION_CONTEXT_PROFILE_VERSION
     runtime: ExecutionRuntime
     configuration: RecordReference | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
@@ -45,13 +45,13 @@ class ExecutionContextManifest(OclpModel):
 class ExecutionContextArtifactBinding(OclpModel):
     """The value carried under an Artifact's ``profiles.execution-context`` key."""
 
-    version: Literal["0.1.0-draft"]
+    version: Literal["0.2.0-draft"]
 
 
 class ExecutionContextBinding(OclpModel):
-    """The value carried under an Invocation's ``profiles.execution-context`` key."""
+    """The value carried under an Execution's ``profiles.execution-context`` key."""
 
-    version: Literal["0.1.0-draft"]
+    version: Literal["0.2.0-draft"]
     manifest: RecordReference
 
     @model_validator(mode="after")

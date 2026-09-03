@@ -47,7 +47,7 @@ def test_invalid_execution_context_profile_vectors_are_rejected() -> None:
 def test_execution_context_binding_requires_an_exact_manifest_reference() -> None:
     binding = ExecutionContextBinding.model_validate(
         {
-            "version": "0.1.0-draft",
+            "version": "0.2.0-draft",
             "manifest": {
                 "id": "urn:example:artifact:execution-context",
                 "digest": {"value": "a" * 64},
@@ -59,7 +59,7 @@ def test_execution_context_binding_requires_an_exact_manifest_reference() -> Non
     with pytest.raises(ValidationError):
         ExecutionContextBinding.model_validate(
             {
-                "version": "0.1.0-draft",
+                "version": "0.2.0-draft",
                 "manifest": {"id": "urn:example:artifact:execution-context"},
             }
         )

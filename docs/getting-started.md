@@ -57,7 +57,7 @@ record vocabulary:
 from oclp import parse_record
 
 record = parse_record({
-    "oclp_version": "0.1.0-draft",
+    "oclp_version": "0.2.0-draft",
     "kind": "artifact",
     "id": "urn:example:artifact:daily-report",
     "media_type": "application/json",

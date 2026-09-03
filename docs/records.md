@@ -4,12 +4,12 @@ The SDK exposes immutable Pydantic models for the six OCLP core record kinds:
 
 | Kind | SDK model | Role |
 | --- | --- | --- |
-| `definition` | `ComputationDefinition` | A reusable computation interface and implementation basis. |
-| `invocation` | `Invocation` | One request to execute a Definition. |
+| `computation` | `Computation` | A reusable computation interface, implementation basis, and optional exact Evidence evaluators required for success. |
+| `execution` | `Execution` | One actual run of a Computation; each retry or rerun is a distinct Execution. |
 | `artifact` | `Artifact` | Immutable content bytes, such as an input, output, log, or package. |
 | `artifact_set` | `ArtifactSet` | A named, exact collection of Artifacts. |
-| `evidence` | `Evidence` | A contract evaluation about a record. |
-| `event` | `LifecycleEvent` | An ordered observation about an execution attempt. |
+| `evidence` | `Evidence` | An evaluator result about a record. |
+| `event` | `Event` | An ordered observation about an Execution. |
 
 The API names are Python conveniences. Field semantics, required fields, and
 conformance requirements belong to the [normative specification](https://evanz.github.io/open-computation-lifecycle/protocol/specification/).
@@ -22,7 +22,8 @@ from oclp import (
     parse_record,
     record_digest,
     validate_derivation_graph,
-    validate_invocation_hierarchy,
+    validate_execution_acceptance,
+    validate_execution_hierarchy,
 )
 ```
 
@@ -32,11 +33,14 @@ from oclp import (
   for an OCLP record digest.
 - `record_digest(record)` returns the SHA-256 digest of those canonical bytes.
 - `validate_derivation_graph(records)` validates resolved input/output
-  derivation bindings and rejects cycles.
-- `validate_invocation_hierarchy(records)` validates the separate parent-child
-  Invocation hierarchy and rejects orchestration cycles.
+  derivation bindings, declared Execution parameters (including their JSON
+  Schema), and rejects cycles.
+- `validate_execution_hierarchy(records)` validates the separate parent-child
+  Execution hierarchy and rejects orchestration cycles.
+- `validate_execution_acceptance(records)` rejects a claimed successful
+  Execution when it lacks passing Evidence for every evaluator required by its Computation.
 
-An Invocation input or output may resolve to either an `Artifact` or an
+An Execution input or output may resolve to either an `Artifact` or an
 `ArtifactSet`. Use an ArtifactSet when a computation consumes or produces one
 named, immutable package (for example a model-serving release). The SDK treats
 that package as one derivation node; its named members remain an inventory
@@ -52,7 +56,7 @@ exact immutable revision is required.
 An Artifact or ArtifactSet may include `created_at` when its producer can
 assert the time it created that exact immutable record/materialization. It is
 not a source-file mtime, object-store upload, or viewer observation time. Omit
-it when unknown; use `LifecycleEvent.occurred_at` for execution and publication
+it when unknown; use `Event.occurred_at` for execution and publication
 chronology.
 
 ```python
@@ -71,9 +75,10 @@ when its metadata changes without claiming that its payload bytes changed.
 ## Profiles
 
 Profiles add opt-in semantic layers without expanding the portable core. This
-SDK includes optional helpers for the OCLP-maintained `dataset-snapshot`,
-`execution-context`, and `lifecycle` profiles under `oclp.profiles`. Their
-definitions, schemas, and conformance vectors are owned by the separate
+SDK includes optional validation adapters for the OCLP-maintained
+`dataset-snapshot`, `execution-context`, and `lifecycle` profiles under
+`oclp.profiles`. Their definitions, schemas, and conformance vectors are owned
+by the separate
 [OCLP Profiles](https://evanz.github.io/oclp-profiles/) package.
 
 Profile bindings are carried by the core `profiles` field. A producer emits

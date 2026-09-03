@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -15,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-OCLP_DRAFT_VERSION = "0.1.0-draft"
+OCLP_DRAFT_VERSION = "0.2.0-draft"
 
 
 class OclpModel(BaseModel):
@@ -48,6 +49,29 @@ class PortDefinition(OclpModel):
     cardinality: Literal["one", "many"] = "one"
     required: bool = True
     media_types: tuple[str, ...] = ()
+
+
+with warnings.catch_warnings():
+    # ``schema`` is the normative protocol field. Pydantic retains a deprecated
+    # BaseModel.schema() compatibility method, so suppress only that expected
+    # field-shadow warning while preserving the canonical field name.
+    warnings.filterwarnings(
+        "ignore",
+        message='Field name "schema" in "ParameterDefinition" shadows an attribute',
+        category=UserWarning,
+    )
+
+    class ParameterDefinition(OclpModel):
+        """One JSON-valued argument in a reusable Computation interface.
+
+        Artifacts belong on input ports; this value object describes the remaining
+        concrete arguments needed to reproduce an Execution.  ``schema`` uses a
+        JSON Schema subschema so its vocabulary remains language-neutral.
+        """
+
+        name: str = Field(min_length=1)
+        schema: dict[str, JsonValue]
+        required: bool = True
 
 
 class GitSource(OclpModel):
@@ -114,9 +138,7 @@ class Implementation(OclpModel):
         return self
 
 
-class ContractReference(OclpModel):
-    id: str = Field(min_length=1)
-    version: str = Field(min_length=1)
+EvidenceOutcome = Literal["pass", "fail", "error"]
 
 
 class Diagnostic(OclpModel):
@@ -139,7 +161,7 @@ class Diagnostic(OclpModel):
 
 
 class CoreRecord(OclpModel):
-    oclp_version: Literal["0.1.0-draft"] = OCLP_DRAFT_VERSION
+    oclp_version: Literal["0.2.0-draft"] = OCLP_DRAFT_VERSION
     id: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
@@ -216,52 +238,75 @@ class ArtifactSet(CoreRecord):
         return self
 
 
-class ComputationDefinition(CoreRecord):
-    kind: Literal["definition"] = "definition"
+class Computation(CoreRecord):
+    """A reusable, source-bound computation interface and implementation."""
+
+    kind: Literal["computation"] = "computation"
     implementation: Implementation
     input_ports: tuple[PortDefinition, ...] = ()
     output_ports: tuple[PortDefinition, ...] = ()
+    parameter_definitions: tuple[ParameterDefinition, ...] = ()
+    required_evidence: tuple[Implementation, ...] | None = Field(
+        default=None,
+        min_length=1,
+    )
 
     @model_validator(mode="after")
-    def port_names_are_unique(self) -> ComputationDefinition:
+    def interface_and_evidence_requirements_are_unique(self) -> Computation:
         for ports in (self.input_ports, self.output_ports):
             names = [port.name for port in ports]
             if len(names) != len(set(names)):
                 raise ValueError("port names must be unique within each direction")
+        parameter_names = [parameter.name for parameter in self.parameter_definitions]
+        if len(parameter_names) != len(set(parameter_names)):
+            raise ValueError("computation parameter names must be unique")
+        input_names = {port.name for port in self.input_ports}
+        if input_names.intersection(parameter_names):
+            raise ValueError(
+                "computation parameter names must not overlap input port names"
+            )
+        evaluators = self.required_evidence or ()
+        evaluator_keys = [
+            evaluator.model_dump_json(exclude_none=True) for evaluator in evaluators
+        ]
+        if len(evaluator_keys) != len(set(evaluator_keys)):
+            raise ValueError("required evidence evaluators must be unique")
         return self
 
 
-class Invocation(CoreRecord):
-    kind: Literal["invocation"] = "invocation"
-    definition: RecordReference
-    parent_invocation: RecordReference | None = None
+class Execution(CoreRecord):
+    """One concrete run of a Computation with immutable I/O bindings."""
+
+    kind: Literal["execution"] = "execution"
+    computation: RecordReference
+    parent_execution: RecordReference | None = None
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
     inputs: dict[str, tuple[RecordReference, ...]] = Field(default_factory=dict)
     outputs: dict[str, tuple[RecordReference, ...]] | None = None
     requested_outputs: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def output_references_are_content_bound(self) -> Invocation:
-        if self.parent_invocation is not None and self.parent_invocation.id == self.id:
-            raise ValueError("an invocation cannot be its own parent")
+    def output_references_are_content_bound(self) -> Execution:
+        if self.parent_execution is not None and self.parent_execution.id == self.id:
+            raise ValueError("an execution cannot be its own parent")
         for references in (self.outputs or {}).values():
             if any(reference.digest is None for reference in references):
-                raise ValueError("invocation outputs must include record digests")
+                raise ValueError("execution outputs must include record digests")
         return self
 
 
 class Evidence(CoreRecord):
     kind: Literal["evidence"] = "evidence"
     subject: RecordReference
-    contract: ContractReference
-    outcome: Literal["pass", "fail", "error"]
+    evaluator: Implementation
+    outcome: EvidenceOutcome
     observed_at: datetime
     diagnostic: Diagnostic | None = None
     details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class GitCheckout(OclpModel):
-    """The local Git worktree observed for one execution attempt."""
+    """The local Git worktree observed for one Execution."""
 
     kind: Literal["git"] = "git"
     worktree: str = Field(min_length=1)
@@ -270,31 +315,25 @@ class GitCheckout(OclpModel):
 
 
 class ExecutionContext(OclpModel):
-    """Execution-local context attached to a lifecycle observation."""
+    """Execution-local runtime context attached to a lifecycle observation."""
 
     git_checkout: GitCheckout | None = None
 
 
-class LifecycleEvent(CoreRecord):
+class Event(CoreRecord):
     kind: Literal["event"] = "event"
-    invocation: RecordReference
+    execution: RecordReference
     event_type: str = Field(min_length=1)
     occurred_at: datetime
     sequence: int = Field(ge=0)
-    attempt_id: str | None = None
-    execution: ExecutionContext | None = None
+    runtime: ExecutionContext | None = None
     status: Literal["succeeded", "failed", "skipped"] | None = None
     diagnostic: Diagnostic | None = None
     data: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 OclpRecord = Annotated[
-    Artifact
-    | ArtifactSet
-    | ComputationDefinition
-    | Invocation
-    | Evidence
-    | LifecycleEvent,
+    Artifact | ArtifactSet | Computation | Execution | Evidence | Event,
     Field(discriminator="kind"),
 ]
 

@@ -11,12 +11,13 @@ from oclp import (
     Artifact,
     ArtifactSet,
     ArtifactSetMember,
-    Invocation,
+    Computation,
+    Execution,
     canonical_json_bytes,
     parse_record,
     record_digest,
 )
-from oclp.models import Digest, RecordReference
+from oclp.models import Digest, Implementation, RecordReference
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -116,48 +117,62 @@ def test_created_at_requires_an_explicit_offset(
         record_type(**kwargs)
 
 
-def test_legacy_invocation_omits_absent_outputs_from_canonical_json() -> None:
-    invocation = Invocation(
-        id="invocation.example",
-        definition=RecordReference(id="definition.example"),
+def test_execution_omits_absent_outputs_from_canonical_json() -> None:
+    execution = Execution(
+        id="execution.example",
+        computation=RecordReference(id="computation.example"),
     )
 
-    assert b'"outputs"' not in canonical_json_bytes(invocation)
-    assert b'"name"' not in canonical_json_bytes(invocation)
+    assert b'"outputs"' not in canonical_json_bytes(execution)
+    assert b'"name"' not in canonical_json_bytes(execution)
+
+
+def test_computation_omits_absent_evidence_requirements_from_canonical_json() -> None:
+    computation = Computation(
+        id="urn:example:computation:unqualified",
+        implementation=Implementation(
+            kind="other",
+            locator="example:unqualified",
+            source={"kind": "opaque", "reason": "test fixture"},
+        ),
+    )
+
+    assert computation.required_evidence is None
+    assert b'"required_evidence"' not in canonical_json_bytes(computation)
 
 
 def test_profiles_are_a_typed_contract_surface_distinct_from_annotations() -> None:
-    invocation = Invocation(
-        id="invocation.example",
-        definition=RecordReference(id="definition.example"),
-        profiles={"lifecycle": {"version": "0.1.0-draft"}},
+    execution = Execution(
+        id="execution.example",
+        computation=RecordReference(id="computation.example"),
+        profiles={"lifecycle": {"version": "0.2.0-draft"}},
         annotations={"example.org/owner": "data-platform"},
     )
 
-    assert invocation.profiles["lifecycle"]["version"] == "0.1.0-draft"
-    assert invocation.annotations == {"example.org/owner": "data-platform"}
-    assert b'"profiles"' in canonical_json_bytes(invocation)
+    assert execution.profiles["lifecycle"]["version"] == "0.2.0-draft"
+    assert execution.annotations == {"example.org/owner": "data-platform"}
+    assert b'"profiles"' in canonical_json_bytes(execution)
     with pytest.raises(ValidationError):
-        Invocation(
+        Execution(
             id="invalid-profile.example",
-            definition=RecordReference(id="definition.example"),
-            profiles={"": {"version": "0.1.0-draft"}},
+            computation=RecordReference(id="computation.example"),
+            profiles={"": {"version": "0.2.0-draft"}},
         )
 
 
 def test_unprofiled_records_canonically_declare_null_profiles() -> None:
-    invocation = Invocation(
-        id="invocation.example",
-        definition=RecordReference(id="definition.example"),
+    execution = Execution(
+        id="execution.example",
+        computation=RecordReference(id="computation.example"),
     )
 
-    assert invocation.profiles is None
-    assert b'"profiles":null' in canonical_json_bytes(invocation)
+    assert execution.profiles is None
+    assert b'"profiles":null' in canonical_json_bytes(execution)
 
     with pytest.raises(ValidationError):
-        Invocation(
+        Execution(
             id="empty-profiles.example",
-            definition=RecordReference(id="definition.example"),
+            computation=RecordReference(id="computation.example"),
             profiles={},
         )
 

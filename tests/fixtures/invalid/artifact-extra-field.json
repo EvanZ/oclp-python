@@ -1,5 +1,5 @@
 {
-  "oclp_version": "0.1.0-draft",
+  "oclp_version": "0.2.0-draft",
   "kind": "artifact",
   "id": "artifact.invalid",
   "media_type": "application/octet-stream",

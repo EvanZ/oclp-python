@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from oclp import canonical_json_bytes, record_digest
-from oclp.models import LifecycleEvent, RecordReference
+from oclp.models import Event, RecordReference
 from oclp.profiles import LifecycleTimelineVector, lifecycle_timeline
 
 
@@ -47,40 +47,68 @@ def test_invalid_lifecycle_vectors_are_rejected() -> None:
 
 
 def test_lifecycle_timeline_resolves_portable_event_times() -> None:
-    invocation = RecordReference(id="urn:example:invocation:transform")
+    execution = RecordReference(id="urn:example:execution:transform")
     events = (
-        LifecycleEvent(
-            id="urn:example:event:requested",
-            invocation=invocation,
-            event_type="invocation-requested",
+        Event(
+            id="urn:example:event:started",
+            execution=execution,
+            event_type="execution-started",
             occurred_at=datetime(2026, 8, 24, 18, 0, tzinfo=UTC),
             sequence=0,
         ),
-        LifecycleEvent(
-            id="urn:example:event:started",
-            invocation=invocation,
-            event_type="attempt-started",
-            occurred_at=datetime(2026, 8, 24, 18, 0, 1, tzinfo=UTC),
-            sequence=1,
-            attempt_id="attempt-1",
-        ),
-        LifecycleEvent(
+        Event(
             id="urn:example:event:terminal",
-            invocation=invocation,
-            event_type="invocation-terminal",
+            execution=execution,
+            event_type="execution-terminal",
             occurred_at=datetime(2026, 8, 24, 18, 0, 4, tzinfo=UTC),
-            sequence=2,
+            sequence=1,
             status="succeeded",
-            attempt_id="attempt-1",
         ),
     )
 
     timeline = lifecycle_timeline(
-        {"version": "0.1.0-draft"},
+        {"version": "0.2.0-draft"},
         events,
     )
 
-    assert timeline.requested_at == events[0].occurred_at
-    assert timeline.started_at == events[1].occurred_at
-    assert timeline.completed_at == events[2].occurred_at
+    assert timeline.started_at == events[0].occurred_at
+    assert timeline.completed_at == events[1].occurred_at
     assert timeline.status == "succeeded"
+
+
+def test_lifecycle_binding_can_identify_a_shared_run() -> None:
+    vector = LifecycleTimelineVector.model_validate(
+        {
+            "binding": {
+                "version": "0.2.0-draft",
+                "run_id": "urn:example:lifecycle:nightly:2026-09-01",
+                "run_name": "Nightly feature build",
+            },
+            "events": [
+                {
+                    "event_type": "execution-started",
+                    "occurred_at": "2026-09-01T01:00:00Z",
+                    "sequence": 0,
+                }
+            ],
+        }
+    )
+
+    assert vector.binding.run_id == "urn:example:lifecycle:nightly:2026-09-01"
+    assert vector.binding.run_name == "Nightly feature build"
+
+
+def test_lifecycle_binding_rejects_a_run_name_without_an_identity() -> None:
+    with pytest.raises((ValidationError, ValueError), match="run_name requires run_id"):
+        LifecycleTimelineVector.model_validate(
+            {
+                "binding": {"version": "0.2.0-draft", "run_name": "Nightly"},
+                "events": [
+                    {
+                        "event_type": "execution-started",
+                        "occurred_at": "2026-09-01T01:00:00Z",
+                        "sequence": 0,
+                    }
+                ],
+            }
+        )
