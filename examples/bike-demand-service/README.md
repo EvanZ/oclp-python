@@ -19,7 +19,7 @@ publishes.
 **Batch and local inference milestones implemented.** The `run` command
 downloads the UCI source data, builds leakage-safe time-ordered folds, trains
 CatBoost models, evaluates and packages a release, and scores an untouched
-holdout. It then opens a separate **Release inference smoke test** lifecycle:
+holdout. It then opens a separate **Release inference smoke test** run:
 it resolves the just-published `release-manifest.json`, submits one fixed
 request to the same decorated prediction callable used by FastAPI, and requires
 response-validation Evidence to pass. The `serve` command requires that
@@ -67,17 +67,17 @@ inputs. The example will predict demand with CatBoost regression using
 time-ordered folds. Target-derived fields must be excluded from features to
 avoid leakage.
 
-## Intended lifecycle
+## Intended run topology
 
 ```text
 source snapshot Artifact (CSV)
   -> feature-table + fold-definition Artifacts
   -> prepare, fold-training, evaluation, final-training, and holdout-scoring Executions
-       (all share one lifecycle-profile run_id)
+       (all share one UUID-based run-profile `run_id`)
   -> evaluation Evidence and metrics Artifact
   -> model-release ArtifactSet
   -> offline holdout inference
-  -> separate release-inference smoke-test lifecycle
+  -> separate release-inference smoke-test run
   -> FastAPI request-scoped inference
 ```
 
@@ -87,10 +87,10 @@ The example will use OCLP Core records as follows:
 | --- | --- |
 | Download UCI source table | Persisted CSV source snapshot of the fetched table. |
 | Prepare features | Execution that produces feature-table and fold-definition Artifacts. |
-| Train a candidate | Separate fold-training Executions joined with the batch by a shared lifecycle-profile `run_id`. |
+| Train a candidate | Separate fold-training Executions joined with the batch by a shared UUID-based run-profile `run_id`. |
 | Evaluate candidate | Predictions and detailed metrics as Artifacts; aggregate quality checks as Evidence. |
 | Publish release | ArtifactSet containing the selected model, feature contract, configuration, validation report, and training data; an SDK-owned manifest sidecar identifies the exact set. |
-| Release inference smoke test | A linked sibling lifecycle that resolves the release manifest into the exact ArtifactSet, records a deterministic request and response, and requires prediction-response Evidence to pass. |
+| Release inference smoke test | A linked sibling run that resolves the release manifest into the exact ArtifactSet, records a deterministic request and response, and requires prediction-response Evidence to pass. |
 | Score a request | Execution from the release ArtifactSet and a request Artifact to a response Artifact, with OCLP Events. |
 
 The FastAPI demo retains all request/response Artifacts locally. A production
@@ -102,7 +102,7 @@ and an operational export rather than synchronously persisting every request.
 The batch milestone also uses MLflow as a parallel experiment-tracking view.
 It is not the source of truth for OCLP records or Artifact identity.
 
-- One parent MLflow run represents the batch lifecycle.
+- One parent MLflow run represents the model-training batch.
 - Nested MLflow runs mirror the real OCLP Executions, including every fold.
 - MLflow records tunable parameters, per-fold and aggregate metrics, and
   human-oriented charts or reports.
@@ -130,9 +130,9 @@ examples/bike-demand-service/
     data.py                   # UCI access and time-ordered feature preparation
     modeling.py               # training plan, CatBoost training, evaluation, scoring
     environment.py            # local OCLP, payload, and MLflow storage locations
-    runner.py                 # declared lifecycle, bootstrap, and nested MLflow instrumentation
+    runner.py                 # declared run, bootstrap, and nested MLflow instrumentation
     mlflow.py                 # all MLflow interaction and OCLP run correlation
-    cli.py                    # executable batch-lifecycle command
+    cli.py                    # executable model-training command
     service.py                # release-backed FastAPI application factory
   tests/                      # preparation, tracking, and FastAPI contract tests
   pyproject.toml              # demo-only dependencies and local SDK binding
@@ -145,13 +145,13 @@ path. From this directory:
 
 ```bash
 uv sync
-uv run bike-demand run --run-id bike-demand-first-run
+uv run bike-demand run --materialization-id bike-demand-first-run
 ```
 
 The first command creates an isolated demo environment. `run` performs the
-complete batch lifecycle, publishes its release, then performs one
-release-backed inference smoke test in a separate lifecycle. The smoke test has
-run ID `<run-id>-release-smoke`, so Cyclops shows it as a sibling lifecycle
+complete model-training run, publishes its release, then performs one
+release-backed inference smoke test in a separate run. The SDK assigns each
+run a fresh UUID, so Cyclops shows the smoke test as a sibling run
 linked to training through the released model Artifact rather than as a fake
 training step. It writes only ignored local data beneath `data/`.
 
@@ -162,7 +162,7 @@ prediction callable as FastAPI; it intentionally does not start an HTTP server.
 After a run, inspect the resulting records in Cyclops:
 
 ```bash
-oclp-explorer --oclp-dir "$(pwd)/data/oclp-0.2-evidence"
+oclp-explorer --oclp-dir "$(pwd)/data/oclp-0.3"
 ```
 
 Start a request-scoped service with the `release-manifest.json` path printed by
@@ -178,7 +178,7 @@ twelve model features (`season`, `yr`, `mnth`, `hr`, `holiday`, `weekday`,
 `workingday`, `weathersit`, `temp`, `atemp`, `hum`, and `windspeed`). Its JSON
 response identifies the request ID, exact release ID, OCLP Execution ID, and
 the durable response Artifact ID. Request and response payloads remain under
-`data/inference/`; their canonical records appear in `data/oclp-0.2-evidence/`.
+`data/inference/`; their canonical records appear in `data/oclp-0.3/`.
 
 Or start MLflow's local UI against the independent SQLite tracking database:
 

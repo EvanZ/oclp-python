@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 from pydantic import ValidationError
@@ -28,12 +29,11 @@ from oclp import (
     evidence,
     evidence_implementation,
     json_artifact,
-    lifecycle,
-    lifecycle_template,
     load_release_manifest,
     many,
-    observe_lifecycle,
-    record_digest,
+    observe_run,
+    run,
+    run_template,
     validate_derivation_graph,
 )
 from oclp.models import (
@@ -75,11 +75,10 @@ def use_release(release: ArtifactSetHandle) -> str:
     return str(configuration["source"])
 
 
-@lifecycle(
-    namespace="urn:example",
-    name="Report normalization lifecycle",
+@run(
+    name="Reports",
 )
-def normalize_report_lifecycle(source: str) -> str:
+def normalize_report_run(source: str) -> str:
     """A workflow whose real child Computation is observed by the SDK."""
 
     assert active_run() is not None
@@ -97,7 +96,8 @@ def test_computation_decorator_keeps_callable_behavior_and_derives_locator() -> 
     )
 
     assert normalize_report(" report ") == "report"
-    assert computation_template(normalize_report).id == record.id
+    assert computation_template(normalize_report).id != record.id
+    assert UUID(record.id).version == 5
     assert record.implementation.locator.endswith(".normalize_report")
     assert record.input_ports[0].name == "source"
     assert record.output_ports[0].name == "report"
@@ -115,20 +115,16 @@ def test_oclp_run_exposes_the_computation_for_an_observed_result(tmp_path) -> No
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="computation-binding",
             source=source,
         ) as observed:
             result = normalize_report(" report ")
             computation = observed.computation_for(result)
 
-    assert computation.id == "urn:example:computation:normalize-report"
-    assert computation.digest == record_digest(
-        computation_record(normalize_report, source=source)
-    )
+    assert UUID(computation.id).version == 5
+    assert computation.id == computation_record(normalize_report, source=source).id
 
 
-def test_observe_lifecycle_derives_one_shared_profile_for_real_executions(
+def test_observe_run_derives_one_shared_uuid_profile_for_real_executions(
     tmp_path,
 ) -> None:
     source = GitSource(
@@ -140,31 +136,25 @@ def test_observe_lifecycle_derives_one_shared_profile_for_real_executions(
         record_root=tmp_path / "records",
         payload_root=tmp_path / "payloads",
     ) as publisher:
-        with observe_lifecycle(
-            normalize_report_lifecycle,
+        with observe_run(
+            normalize_report_run,
             publisher=publisher,
-            run_id="report-run-1",
             source=source,
         ) as observed:
-            result = normalize_report_lifecycle(" report ")
+            result = normalize_report_run(" report ")
             execution_ref = observed.execution_for(result)
         records = publisher.records()
 
-    assert lifecycle_template(normalize_report_lifecycle).name == (
-        "Report normalization lifecycle"
-    )
+    assert run_template(normalize_report_run).name == "Reports"
     execution = next(
         record
         for record in records
         if isinstance(record, Execution) and record.id == execution_ref.id
     )
-    assert execution.profiles == {
-        "lifecycle": {
-            "version": "0.2.0-draft",
-            "run_id": "urn:example:lifecycle:report-run-1",
-            "run_name": "Report normalization lifecycle",
-        }
-    }
+    assert execution.profiles is not None
+    assert execution.profiles["run"]["version"] == "0.3.0-draft"
+    assert UUID(execution.profiles["run"]["run_id"]).version == 4
+    assert execution.profiles["run"]["run_name"] == "Reports"
     assert execution.name == "Normalize report"
 
 
@@ -226,13 +216,10 @@ def test_computation_binds_and_validates_one_artifact_set_input(tmp_path) -> Non
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="release-consumer",
             source=source,
         ) as observed:
             configuration = source_configuration()
             release = observed.publish_artifact_set(
-                key="validated-release",
                 name="Validated release",
                 members={"configuration": (configuration, "config")},
             )
@@ -241,7 +228,7 @@ def test_computation_binds_and_validates_one_artifact_set_input(tmp_path) -> Non
         records = publisher.records()
 
     assert result == "hourly-bike-data"
-    assert execution.id == "urn:example:execution:use-release:release-consumer"
+    assert UUID(execution.id).version == 4
     execution_record = next(
         record
         for record in records
@@ -274,21 +261,18 @@ def test_oclp_run_publishes_an_artifact_set_from_exact_handles(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="release-1",
             source=source,
             profiles={
-                "lifecycle": {
-                    "version": "0.2.0-draft",
-                    "run_id": "urn:example:lifecycle:release-1",
-                    "run_name": "Validated release lifecycle",
+                "run": {
+                    "version": "0.3.0-draft",
+                    "run_id": "53ad75e2-f9fe-4f0b-b36c-cd097a33ac22",
+                    "run_name": "Validated release",
                 }
             },
         ) as observed:
             configuration = source_configuration()
             evaluation = validation_report()
             release = observed.publish_artifact_set(
-                key="validated-release",
                 name="Validated release",
                 members={
                     "configuration": (configuration, "config"),
@@ -298,9 +282,7 @@ def test_oclp_run_publishes_an_artifact_set_from_exact_handles(
         records = publisher.records()
 
     assert isinstance(release, ArtifactSetHandle)
-    assert release.artifact_set.id == (
-        "urn:example:artifact-set:validated-release:release-1"
-    )
+    assert UUID(release.artifact_set.id).version == 4
     assert [member.name for member in release.artifact_set.members] == [
         "configuration",
         "evaluation",
@@ -309,13 +291,9 @@ def test_oclp_run_publishes_an_artifact_set_from_exact_handles(
         "config",
         "validation",
     ]
-    assert release.artifact_set.profiles == {
-        "lifecycle": {
-            "version": "0.2.0-draft",
-            "run_id": "urn:example:lifecycle:release-1",
-            "run_name": "Validated release lifecycle",
-        }
-    }
+    # Direct ArtifactSet publication is not an Execution and must not claim
+    # the Execution-only run profile.
+    assert release.artifact_set.profiles is None
     assert not any(isinstance(record, Execution) for record in records)
     assert any(isinstance(record, ArtifactSet) for record in records)
     validate_derivation_graph(records)
@@ -335,14 +313,11 @@ def test_oclp_run_materializes_a_release_manifest_from_exact_handles(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="release-manifest-1",
             source=source,
         ) as observed:
             configuration = source_configuration()
             evaluation = validation_report()
             release = observed.publish_artifact_set(
-                key="validated-release",
                 name="Validated release",
                 members={
                     "configuration": (configuration, "config"),
@@ -356,6 +331,12 @@ def test_oclp_run_materializes_a_release_manifest_from_exact_handles(
     assert release.manifest is not None
     assert release.manifest.artifact.name == "Validated release manifest"
     assert release.manifest.artifact.media_type == "application/json"
+    assert release.manifest.artifact.profiles == {
+        "release-manifest": {
+            "version": "0.3.0-draft",
+            "artifact_set": release.reference.model_dump(mode="json"),
+        }
+    }
     assert release.manifest.path.name == "release-manifest.json"
     assert [member.name for member in release.artifact_set.members] == [
         "configuration",
@@ -444,8 +425,6 @@ def test_computation_inferrs_json_parameter_contract_from_callable_signature(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="parameter-contract",
             source=source,
         ):
             parameterized_report(
@@ -456,16 +435,15 @@ def test_computation_inferrs_json_parameter_contract_from_callable_signature(
         execution = next(
             record
             for record in publisher.records()
-            if isinstance(record, Execution)
-            and record.id
-            == "urn:example:execution:parameterized-report:parameter-contract"
+                if isinstance(record, Execution)
+                and record.computation.id
+                == computation_record(parameterized_report, source=source).id
         )
 
     assert execution.parameters == {"fold_number": 2, "mode": "fast"}
 
 
 @json_artifact(
-    id="urn:example:artifact:fold-definition",
     name="Example fold definition",
 )
 def fetch_fold_definition() -> dict[str, object]:
@@ -528,8 +506,6 @@ def test_json_artifact_adapts_to_a_mapping_when_the_callable_requests_one(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="json-mapping",
             source=source,
         ):
             fold_definition = fetch_fold_definition()
@@ -542,7 +518,9 @@ def test_json_artifact_adapts_to_a_mapping_when_the_callable_requests_one(
     record = next(
         record
         for record in records
-        if record.id == "urn:example:execution:read-fold-definition:json-mapping"
+        if isinstance(record, Execution)
+        and record.computation.id
+        == computation_record(read_fold_definition, source=source).id
     )
     assert isinstance(record, Execution)
     assert record.inputs == {"fold_definition": (fold_definition.reference,)}
@@ -562,8 +540,6 @@ def test_active_run_binds_many_artifacts_and_evaluates_required_evidence(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="many-artifacts",
             source=source,
         ) as observed:
             reports = (fetch_report(2), fetch_report(3))
@@ -651,14 +627,11 @@ def test_materialized_artifact_set_requires_an_application_owned_manifest_name(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="unnamed-manifest",
             source=source,
         ) as observed:
             configuration = source_configuration()
             with pytest.raises(ValueError, match="application-supplied manifest_name"):
                 observed.publish_artifact_set(
-                    key="validated-release",
                     name="Validated release",
                     members={"configuration": (configuration, "config")},
                     materialize_manifest=True,
@@ -699,16 +672,13 @@ def test_evidence_decorator_evaluates_and_binds_the_source_bound_evaluator() -> 
         repository="https://github.com/example/reports.git",
         commit="a" * 40,
     )
-    subject = RecordReference(
-        id="urn:example:execution:test",
-        digest=record_digest(computation_record(normalize_report, source=source)),
-    )
+    subject = RecordReference(id=_id("execution:test"))
     record = evaluate_evidence(
         quality_gate,
         3,
         subject=subject,
         source=source,
-        id="urn:example:evidence:quality:test",
+        id=_id("evidence:quality:test"),
         observed_at="2026-08-30T18:00:00Z",
     )
 
@@ -725,9 +695,9 @@ def test_evidence_decorator_explains_a_failed_outcome() -> None:
     record = evaluate_evidence(
         quality_gate,
         0,
-        subject=RecordReference(id="urn:example:execution:test"),
+        subject=RecordReference(id=_id("execution:test")),
         source=source,
-        id="urn:example:evidence:quality:failed",
+        id=_id("evidence:quality:failed"),
         observed_at="2026-08-30T18:00:00Z",
     )
 
@@ -769,8 +739,6 @@ def test_runtime_collects_all_required_evidence_when_a_gate_errors(tmp_path) -> 
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="collect-all-evidence",
             source=source,
         ) as observed:
             result = collect_evidence()
@@ -809,13 +777,11 @@ class PreparedTable:
     outputs={
         "table": CsvArtifact(
             name="Prepared source table",
-            key="prepared-table",
             path="prepared/table.csv",
             schema_uri="urn:example:schema:table:v1",
         ),
         "metadata": JsonArtifact(
             name="Prepared table metadata",
-            key="prepared-table-metadata",
             path="prepared/metadata.json",
             annotations={"producer": "test"},
         ),
@@ -858,8 +824,6 @@ def test_active_run_materializes_return_values_and_tracks_exact_input_objects(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="automatic-output",
             source=source,
         ) as observed:
             table = fetch_table()
@@ -871,10 +835,8 @@ def test_active_run_materializes_return_values_and_tracks_exact_input_objects(
 
     assert summary == {"rows": 275}
     assert source_snapshot.path.read_text() == "value\n1\n"
-    assert source_snapshot.artifact.id == (
-        "urn:example:artifact:fetch-table:automatic-output:source_snapshot"
-    )
-    assert ingest_execution.id == "urn:example:execution:fetch-table:automatic-output"
+    assert UUID(source_snapshot.artifact.id).version == 4
+    assert UUID(ingest_execution.id).version == 4
 
     executions = [record for record in records if isinstance(record, Execution)]
     fetch_execution = next(
@@ -883,7 +845,8 @@ def test_active_run_materializes_return_values_and_tracks_exact_input_objects(
     summary_execution = next(
         record
         for record in executions
-        if record.id == "urn:example:execution:summarize-table:automatic-output"
+        if record.computation.id
+        == computation_record(summarize_table, source=source).id
     )
     assert fetch_execution.parameters == {"dataset_id": 275}
     assert fetch_execution.outputs == {"source_snapshot": (source_snapshot.reference,)}
@@ -915,8 +878,6 @@ def test_computation_output_declarations_own_metadata_and_output_bindings(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="prepared-output",
             source=source,
         ) as observed:
             prepared = prepare_table()
@@ -929,7 +890,7 @@ def test_computation_output_declarations_own_metadata_and_output_bindings(
     metadata = outputs["metadata"]
     assert isinstance(outputs["table"], ArtifactHandle)
     assert isinstance(metadata, ArtifactHandle)
-    assert table.id == "urn:example:artifact:prepared-table:prepared-output"
+    assert UUID(table.id).version == 4
     assert table.name == "Prepared source table"
     assert table.schema_uri == "urn:example:schema:table:v1"
     assert table.locations[0].endswith("/prepared/table.csv")
@@ -945,3 +906,7 @@ def test_computation_output_declarations_own_metadata_and_output_bindings(
         "table": (outputs["table"].reference,),
         "metadata": (metadata.reference,),
     }
+
+
+def _id(name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"test:computation-decorator:{name}"))

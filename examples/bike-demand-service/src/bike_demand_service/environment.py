@@ -28,7 +28,7 @@ class DemoEnvironment:
     def oclp_root(self) -> Path:
         """Return the local directory holding canonical OCLP records."""
 
-        return self.data_root / "oclp-0.2-evidence"
+        return self.data_root / "oclp-0.3"
 
     @property
     def catalog_path(self) -> Path:
@@ -42,10 +42,10 @@ class DemoEnvironment:
 
         return self.data_root / "mlflow"
 
-    def run_root(self, run_id: str) -> Path:
-        """Return the Artifact payload directory for one immutable observation."""
+    def materialization_root(self, materialization_id: str) -> Path:
+        """Return the payload directory for one local materialization."""
 
-        return self.data_root / "runs" / run_id
+        return self.data_root / "runs" / materialization_id
 
     def inference_root(self, request_id: str) -> Path:
         """Return the local payload directory for one HTTP inference request."""

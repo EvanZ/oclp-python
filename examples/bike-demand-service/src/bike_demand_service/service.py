@@ -73,7 +73,6 @@ class PredictionResponse(BaseModel):
 
 
 @json_artifact(
-    id=lambda *, request_id: f"{_NAMESPACE}:artifact:inference-request:{request_id}",
     name="Bike demand prediction request",
 )
 def persist_prediction_request(
@@ -131,7 +130,7 @@ def predict_bike_demand(
 
     ``model_release`` remains an ArtifactSet handle inside the function rather
     than being reduced to an arbitrary model path. The runtime records the
-    digest-bound set itself as the Execution input, verifies that it exposes
+    exact ArtifactSet UUID reference as the Execution input, verifies that it exposes
     the serving members declared above, and this body materializes only the
     model and feature contract it actually needs.
     """
@@ -193,7 +192,6 @@ def create_app(
         """Persist, score, and return one release-pinned prediction request."""
 
         request_id = uuid4().hex
-        run_id = f"inference-{request_id}"
         with LocalArtifactPublisher(
             catalog_path=environment.catalog_path,
             record_root=environment.oclp_root,
@@ -201,8 +199,6 @@ def create_app(
         ) as publisher:
             with OclpRun(
                 publisher=publisher,
-                namespace=_NAMESPACE,
-                run_id=run_id,
                 source=source,
             ) as observed:
                 request_artifact = persist_prediction_request(

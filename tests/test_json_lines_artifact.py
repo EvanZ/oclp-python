@@ -36,8 +36,6 @@ def test_json_lines_artifact_round_trips_mapping_records(tmp_path) -> None:
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="json-lines-round-trip",
             source=source,
         ) as observed:
             records = publish_json_lines()

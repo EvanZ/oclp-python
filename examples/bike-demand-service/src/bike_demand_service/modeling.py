@@ -63,10 +63,11 @@ def holdout_response(
 
 
 @json_artifact(
-    id=lambda run_id: f"urn:oclp-bike-demand:artifact:training-plan:{run_id}",
     name="Bike demand training plan",
 )
-def create_training_plan(*, run_id: str, fold_count: int) -> dict[str, object]:
+def create_training_plan(
+    *, materialization_id: str, fold_count: int
+) -> dict[str, object]:
     """Persist the model workflow's declared fold configuration.
 
     This is an Artifact boundary, not an orchestration Computation: it makes
@@ -74,7 +75,7 @@ def create_training_plan(*, run_id: str, fold_count: int) -> dict[str, object]:
     """
 
     return {
-        "run_id": run_id,
+        "materialization_id": materialization_id,
         "dataset": "UCI Bike Sharing Dataset (hourly)",
         "dataset_id": UCI_BIKE_SHARING_DATASET_ID,
         "temporal_fold_count": fold_count,
@@ -268,7 +269,7 @@ def score_holdout(
 
 
 def _training_config() -> dict[str, float | int | str]:
-    """Return the explicit training configuration selected by this lifecycle."""
+    """Return the explicit training configuration selected by this run."""
 
     return {
         "model": "CatBoostRegressor",

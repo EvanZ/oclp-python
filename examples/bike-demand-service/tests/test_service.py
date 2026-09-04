@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID, uuid4
 
 import pandas as pd
 from catboost import CatBoostRegressor
@@ -18,7 +19,6 @@ from oclp import (
     GitSource,
     JsonArtifact,
     OclpRun,
-    record_digest,
 )
 from oclp.catalog.duckdb import DuckdbCatalog
 from oclp.models import RecordReference
@@ -45,11 +45,11 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     with LocalArtifactPublisher(
         catalog_path=environment.catalog_path,
         record_root=environment.oclp_root,
-        payload_root=environment.run_root("training"),
+        payload_root=environment.materialization_root("training"),
     ) as publisher:
         published_model = CatBoostModelArtifact().persist(
             publisher=publisher,
-            artifact_id="urn:oclp-bike-demand:artifact:test-release-model",
+            artifact_id=str(uuid4()),
             name="Test released CatBoost model",
             relative_path="training/model.cbm",
             value=model,
@@ -57,8 +57,6 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
         )
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="test-release",
             source=GitSource(
                 repository="https://github.com/example/oclp-python.git",
                 commit="a" * 40,
@@ -66,9 +64,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
         ) as observed:
             feature_contract = JsonArtifact().handle(
                 publisher.json_artifact(
-                    artifact_id=(
-                        "urn:oclp-bike-demand:artifact:test-release-feature-contract"
-                    ),
+                    artifact_id=str(uuid4()),
                     name="Test feature contract",
                     relative_path="training/feature-contract.json",
                     value={"features": list(FEATURE_COLUMNS)},
@@ -76,7 +72,6 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
                 )
             )
             release = observed.publish_artifact_set(
-                key="test-release",
                 name="Test bike-demand release",
                 members={
                     "model": (CatBoostModelArtifact().handle(published_model), "model"),
@@ -99,9 +94,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     body = response.json()
     assert body["model_release_id"] == release.artifact_set.id
     assert isinstance(body["prediction"], float)
-    assert body["execution_id"].startswith(
-        "urn:oclp-bike-demand:execution:predict-bike-demand-request:inference-"
-    )
+    assert UUID(body["execution_id"]).version == 4
 
     with DuckdbCatalog(environment.catalog_path) as catalog:
         records = catalog.records()
@@ -139,8 +132,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
         record
         for record in records
         if isinstance(record, Evidence)
-        and record.subject
-        == RecordReference(id=execution.id, digest=record_digest(execution))
+        and record.subject == RecordReference(id=execution.id)
     ]
     assert [(record.name, record.outcome) for record in evidence] == [
         ("Prediction response validation", "pass")
@@ -148,9 +140,8 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     events = [
         record
         for record in records
-        if isinstance(record, Event) and record.execution == RecordReference(
-            id=execution.id, digest=record_digest(execution)
-        )
+        if isinstance(record, Event)
+        and record.execution == RecordReference(id=execution.id)
     ]
     events.sort(key=lambda event: event.sequence)
     assert [(event.event_type, event.status) for event in events] == [

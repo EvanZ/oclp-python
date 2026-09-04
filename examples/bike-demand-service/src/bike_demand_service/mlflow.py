@@ -98,9 +98,7 @@ class MLflowTracker:
         self._mlflow.set_tags(
             {
                 "oclp.execution.id": execution.id,
-                "oclp.execution.digest": _digest_value(execution),
                 "oclp.computation.id": computation.id,
-                "oclp.computation.digest": _digest_value(computation),
             }
         )
         self._mlflow.log_dict(
@@ -110,8 +108,8 @@ class MLflowTracker:
                 "inputs": _references_json(inputs),
                 "outputs": _references_json(outputs or {}),
                 "note": (
-                    "OCLP records are linked by digest; output payloads are "
-                    "mirrored below."
+                    "OCLP records are linked by immutable UUID; output payloads "
+                    "are mirrored below."
                 ),
             },
             "oclp/record-links.json",
@@ -133,15 +131,14 @@ class MLflowTracker:
         self._mlflow.set_tags(
             {
                 "oclp.artifact_set.id": artifact_set.id,
-                "oclp.artifact_set.digest": _digest_value(artifact_set),
             }
         )
         self._mlflow.log_dict(
             {
                 "artifact_set": artifact_set.model_dump(mode="json"),
                 "note": (
-                    "OCLP ArtifactSet members are linked by digest and their "
-                    "payloads are mirrored below. Publication is not a "
+                    "OCLP ArtifactSet members are linked by immutable UUID and "
+                    "their payloads are mirrored below. Publication is not a "
                     "Computation or Execution."
                 ),
             },
@@ -162,7 +159,8 @@ class MLflowTracker:
         """Mirror exact OCLP payload bytes into the active MLflow run.
 
         OCLP remains the source of truth. MLflow receives convenient copies
-        accompanied by content-bound OCLP references for experiment inspection.
+        accompanied by OCLP record UUIDs and payload digests for experiment
+        inspection.
         """
 
         entries: list[dict[str, object]] = []
@@ -174,6 +172,7 @@ class MLflowTracker:
                 {
                     "name": name,
                     "reference": artifact.reference.model_dump(mode="json"),
+                    "payload_digest": artifact.artifact.digest.model_dump(mode="json"),
                     "media_type": artifact.artifact.media_type,
                     "size": artifact.artifact.size,
                     "mlflow_path": f"{destination}/{artifact.path.name}",
@@ -206,14 +205,6 @@ def create_mlflow_tracker(settings: MLflowSettings) -> MLflowTracker:
         )
     mlflow.set_experiment(settings.experiment_name)
     return MLflowTracker(settings=settings, _mlflow=mlflow)
-
-
-def _digest_value(reference: RecordReference) -> str:
-    if reference.digest is None:  # Defensive: all demo links are content-bound.
-        raise ValueError(
-            f"OCLP bridge requires a digest-bound reference: {reference.id}"
-        )
-    return reference.digest.value
 
 
 def _references_json(

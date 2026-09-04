@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 from pydantic import ValidationError
@@ -47,28 +48,30 @@ def test_invalid_execution_context_profile_vectors_are_rejected() -> None:
 def test_execution_context_binding_requires_an_exact_manifest_reference() -> None:
     binding = ExecutionContextBinding.model_validate(
         {
-            "version": "0.2.0-draft",
+            "version": "0.3.0-draft",
             "manifest": {
-                "id": "urn:example:artifact:execution-context",
-                "digest": {"value": "a" * 64},
+                "id": _id("artifact:execution-context"),
             },
         }
     )
 
-    assert binding.manifest.digest is not None
+    assert binding.manifest.id
     with pytest.raises(ValidationError):
         ExecutionContextBinding.model_validate(
             {
-                "version": "0.2.0-draft",
-                "manifest": {"id": "urn:example:artifact:execution-context"},
+                "version": "0.3.0-draft",
+                "manifest": {},
             }
         )
     with pytest.raises(ValidationError):
         ExecutionContextBinding.model_validate(
             {
                 "manifest": {
-                    "id": "urn:example:artifact:execution-context",
-                    "digest": {"value": "a" * 64},
+                    "id": _id("artifact:execution-context"),
                 }
             }
         )
+
+
+def _id(name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"test:execution-context:{name}"))

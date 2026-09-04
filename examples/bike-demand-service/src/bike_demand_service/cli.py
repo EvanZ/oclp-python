@@ -11,7 +11,7 @@ from bike_demand_service.service import create_app
 
 
 def main() -> None:
-    """Run the local lifecycle or serve a specific released model."""
+    """Run local model training or serve a specific released model."""
 
     parser = argparse.ArgumentParser(description="OCLP bike-demand service demo")
     parser.add_argument(
@@ -19,11 +19,11 @@ def main() -> None:
         choices=("run", "serve"),
         nargs="?",
         default="run",
-        help="Run the batch lifecycle or serve one release manifest.",
+        help="Run model training or serve one release manifest.",
     )
     parser.add_argument(
-        "--run-id",
-        help="Stable run label; defaults to a UTC timestamped bike-demand run.",
+        "--materialization-id",
+        help="Local output-folder key; defaults to a UTC timestamped value.",
     )
     parser.add_argument(
         "--temporal-validation-rmse-max",
@@ -67,15 +67,15 @@ def main() -> None:
         )
         return
 
-    run_id = arguments.run_id or datetime.now(UTC).strftime(
+    materialization_id = arguments.materialization_id or datetime.now(UTC).strftime(
         "bike-demand-%Y%m%dT%H%M%SZ"
     )
     result = run_demo(
-        run_id=run_id,
+        materialization_id=materialization_id,
         fold_count=arguments.fold_count,
         temporal_validation_rmse_max=arguments.temporal_validation_rmse_max,
     )
-    print(f"Completed OCLP bike-demand run: {result.run_id}")
+    print(f"Completed OCLP bike-demand training run: {result.training_run_id}")
     print(f"OCLP records: {result.oclp_root}")
     print(f"Model release: {result.model_release.id}")
     print(f"Release manifest: {result.model_release_manifest_path}")

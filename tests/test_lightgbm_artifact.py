@@ -61,8 +61,6 @@ def test_lightgbm_artifact_round_trips_through_sdk_owned_persistence(tmp_path) -
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="lightgbm-round-trip",
             source=source,
         ) as observed:
             trained = train_lightgbm()
@@ -76,7 +74,6 @@ def test_lightgbm_artifact_round_trips_through_sdk_owned_persistence(tmp_path) -
     score_execution = next(
         record
         for record in records
-        if isinstance(record, Execution)
-        and record.id == "urn:example:execution:score-lightgbm:lightgbm-round-trip"
+        if isinstance(record, Execution) and record.name == "Score LightGBM"
     )
     assert score_execution.inputs == {"model": (model_artifact.reference,)}

@@ -130,8 +130,6 @@ def test_arrow_numpy_yaml_and_toml_artifacts_round_trip(tmp_path) -> None:
     with _publisher(tmp_path) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="builtin-format-round-trip",
             source=_source(),
         ) as observed:
             arrow_table = publish_arrow()

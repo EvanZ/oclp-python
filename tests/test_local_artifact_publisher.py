@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 
-from oclp import Artifact
-from oclp.publishing import ArtifactIdentityConflictError, LocalArtifactPublisher
+from oclp import Artifact, record_digest
+from oclp.catalog import CatalogIntegrityError
+from oclp.publishing import LocalArtifactPublisher
 
 
 def test_local_artifact_publisher_writes_payloads_and_canonical_records(tmp_path):
@@ -19,7 +21,6 @@ def test_local_artifact_publisher_writes_payloads_and_canonical_records(tmp_path
         payload_root=payloads,
     ) as publisher:
         published = publisher.artifact_for_bytes(
-            artifact_id="urn:example:artifact:report",
             name="Report",
             relative_path="reports/report.txt",
             content=b"ready\n",
@@ -32,11 +33,11 @@ def test_local_artifact_publisher_writes_payloads_and_canonical_records(tmp_path
     assert published.artifact.locations == (published.path.resolve().as_uri(),)
     assert len(records_in_catalog) == 1
     assert isinstance(records_in_catalog[0], Artifact)
-    assert published.reference.digest is not None
-    assert (records / "artifact" / published.reference.digest.value[:2]).exists()
+    digest = record_digest(published.artifact)
+    assert (records / "artifact" / digest.value[:2] / f"{digest.value}.json").exists()
 
 
-def test_local_artifact_publisher_reuses_an_immutable_artifact_when_declaration_matches(
+def test_local_artifact_publisher_makes_distinct_records_per_materialization(
     tmp_path,
 ):
     with LocalArtifactPublisher(
@@ -45,7 +46,6 @@ def test_local_artifact_publisher_reuses_an_immutable_artifact_when_declaration_
         payload_root=tmp_path / "payloads",
     ) as publisher:
         first = publisher.artifact_for_bytes(
-            artifact_id="urn:example:artifact:immutable-source",
             name="Immutable source",
             relative_path="first/source.txt",
             content=b"unchanged\n",
@@ -53,7 +53,6 @@ def test_local_artifact_publisher_reuses_an_immutable_artifact_when_declaration_
             created_at=datetime(2026, 8, 31, tzinfo=UTC),
         )
         second = publisher.artifact_for_bytes(
-            artifact_id="urn:example:artifact:immutable-source",
             name="Immutable source",
             relative_path="second/source.txt",
             content=b"unchanged\n",
@@ -61,13 +60,13 @@ def test_local_artifact_publisher_reuses_an_immutable_artifact_when_declaration_
             created_at=datetime(2026, 9, 1, tzinfo=UTC),
         )
 
-        assert first.reference == second.reference
-        assert first.artifact.created_at == second.artifact.created_at
+        assert first.reference != second.reference
+        assert first.artifact.digest == second.artifact.digest
         assert second.path.read_bytes() == b"unchanged\n"
-        assert len(publisher.records()) == 1
+        assert len(publisher.records()) == 2
 
 
-def test_local_artifact_publisher_preserves_a_revised_application_owned_name(
+def test_local_artifact_publisher_publishes_a_new_record_when_metadata_changes(
     tmp_path,
 ):
     with LocalArtifactPublisher(
@@ -76,7 +75,6 @@ def test_local_artifact_publisher_preserves_a_revised_application_owned_name(
         payload_root=tmp_path / "payloads",
     ) as publisher:
         first = publisher.artifact_for_bytes(
-            artifact_id="urn:example:artifact:immutable-source",
             name="Source data",
             relative_path="first/source.txt",
             content=b"unchanged\n",
@@ -84,7 +82,6 @@ def test_local_artifact_publisher_preserves_a_revised_application_owned_name(
             created_at=datetime(2026, 8, 31, tzinfo=UTC),
         )
         revised = publisher.artifact_for_bytes(
-            artifact_id="urn:example:artifact:immutable-source",
             name="Raw source data",
             relative_path="second/source.txt",
             content=b"unchanged\n",
@@ -98,7 +95,7 @@ def test_local_artifact_publisher_preserves_a_revised_application_owned_name(
         assert len(publisher.records()) == 2
 
 
-def test_local_artifact_publisher_rejects_different_bytes_for_an_immutable_id(
+def test_local_artifact_publisher_rejects_reusing_a_uuid_for_different_records(
     tmp_path,
 ):
     with LocalArtifactPublisher(
@@ -106,8 +103,9 @@ def test_local_artifact_publisher_rejects_different_bytes_for_an_immutable_id(
         record_root=tmp_path / "records",
         payload_root=tmp_path / "payloads",
     ) as publisher:
+        artifact_id = str(uuid4())
         publisher.artifact_for_bytes(
-            artifact_id="urn:example:artifact:immutable-source",
+            artifact_id=artifact_id,
             name="Immutable source",
             relative_path="source.txt",
             content=b"first\n",
@@ -116,11 +114,11 @@ def test_local_artifact_publisher_rejects_different_bytes_for_an_immutable_id(
         )
 
         with pytest.raises(
-            ArtifactIdentityConflictError,
-            match="immutable Artifact ID",
+            CatalogIntegrityError,
+            match="already identifies different immutable bytes",
         ):
             publisher.artifact_for_bytes(
-                artifact_id="urn:example:artifact:immutable-source",
+                artifact_id=artifact_id,
                 name="Immutable source",
                 relative_path="source.txt",
                 content=b"different\n",

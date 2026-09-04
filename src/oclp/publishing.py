@@ -1,8 +1,8 @@
 """A small local publisher for OCLP records and immutable Artifact payloads.
 
 This is intentionally a filesystem implementation, not a hosted registry or
-an orchestration runtime. Applications still choose Artifact identity, names,
-locations, profiles, and when a record is published.
+an orchestration runtime. Applications choose names, locations, profiles, and
+when a record is published; opaque identities come from the SDK.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any
 from oclp import canonical_json_bytes
 from oclp.canonical import record_digest
 from oclp.catalog.duckdb import DuckdbCatalog
-from oclp.models import Artifact, Digest, OclpRecord, RecordReference
+from oclp.models import Artifact, Digest, OclpRecord, RecordReference, new_record_id
 
 
 @dataclass(frozen=True)
@@ -29,19 +29,14 @@ class PublishedArtifact:
     reference: RecordReference
 
 
-class ArtifactIdentityConflictError(ValueError):
-    """Raised when one immutable Artifact ID is given different content bytes."""
-
-
 class LocalArtifactPublisher:
     """Persist canonical OCLP records and immutable payload bytes locally.
 
     The publisher is generic: it knows how to write bytes, JSON, and existing
     files. It has no policy for a project's Artifact IDs, names, run layout,
     schemas, profiles, or computation boundaries. A project can put those
-    conventions in its own run-scoped facade. It reuses a record only when its
-    immutable application-declared metadata matches; a revised name therefore
-    becomes a new record revision rather than being silently discarded.
+    conventions in its own run-scoped facade. A Core record UUID identifies one
+    immutable record, so a changed artifact record must receive a new UUID.
     """
 
     def __init__(
@@ -69,11 +64,10 @@ class LocalArtifactPublisher:
         self.close()
 
     def publish(self, record: OclpRecord) -> RecordReference:
-        """Index a record and write its canonical JSON by record digest."""
+        """Index a record and write its canonical JSON by integrity digest."""
 
         reference = self._catalog.publish(record)
-        digest = reference.digest
-        assert digest is not None
+        digest = record_digest(record)
         target = (
             self.record_root / record.kind / digest.value[:2] / f"{digest.value}.json"
         )
@@ -85,7 +79,7 @@ class LocalArtifactPublisher:
     def artifact_for_bytes(
         self,
         *,
-        artifact_id: str,
+        artifact_id: str | None = None,
         name: str,
         relative_path: str,
         content: bytes,
@@ -101,45 +95,9 @@ class LocalArtifactPublisher:
         target = self.payload_root / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         resolved_annotations = annotations or {}
-        existing = self._catalog.artifacts_for_id(artifact_id)
-        existing_digests = {artifact.digest.value for artifact in existing}
-        if existing and existing_digests != {content_digest.value}:
-            expected = ", ".join(sorted(existing_digests))
-            raise ArtifactIdentityConflictError(
-                f"immutable Artifact ID {artifact_id!r} already has content "
-                f"digest(s) {expected}; received {content_digest.value}"
-            )
-        matching = next(
-            (
-                artifact
-                for artifact in existing
-                if artifact.name == name
-                and artifact.media_type == media_type
-                and artifact.size == len(content)
-                and artifact.profiles == profiles
-                and artifact.annotations == resolved_annotations
-                and artifact.schema_uri == schema_uri
-            ),
-            None,
-        )
-        if matching is not None:
-            target.write_bytes(content)
-            self._catalog.add_location(
-                matching.digest,
-                target.resolve().as_uri(),
-            )
-            return PublishedArtifact(
-                artifact=matching,
-                path=target,
-                reference=RecordReference(
-                    id=matching.id,
-                    digest=record_digest(matching),
-                ),
-            )
-
         target.write_bytes(content)
         artifact = Artifact(
-            id=artifact_id,
+            id=artifact_id or new_record_id(),
             name=name,
             profiles=profiles,
             annotations=resolved_annotations,
@@ -159,7 +117,7 @@ class LocalArtifactPublisher:
     def json_artifact(
         self,
         *,
-        artifact_id: str,
+        artifact_id: str | None = None,
         name: str,
         relative_path: str,
         value: Any,
@@ -188,7 +146,7 @@ class LocalArtifactPublisher:
     def artifact_for_file(
         self,
         *,
-        artifact_id: str,
+        artifact_id: str | None = None,
         name: str,
         relative_path: str,
         source_path: Path,

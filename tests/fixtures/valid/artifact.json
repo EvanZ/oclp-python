@@ -1,7 +1,7 @@
 {
-  "oclp_version": "0.2.0-draft",
+  "oclp_version": "0.3.0-draft",
   "kind": "artifact",
-  "id": "artifact.example",
+  "id": "0c7e5e5d-9787-486c-9315-00cf18eb522d",
   "media_type": "application/octet-stream",
   "digest": {
     "algorithm": "sha256",

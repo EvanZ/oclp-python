@@ -16,7 +16,7 @@ contracts. OCLP makes its durable observations interoperable.
 | `data.py` | Downloads the UCI source and prepares leakage-safe temporal features. | Declares a CSV Artifact acquisition and the feature-preparation Computation. |
 | `modeling.py` | Declares the training-plan Artifact, trains CatBoost folds and final model, evaluates, and scores holdout data. | Declares reusable model boundaries. |
 | `environment.py` | Resolves local OCLP, MLflow, and payload directories. | Local-only execution environment; not a durable run input. |
-| `runner.py` | Declares and coordinates the real model lifecycle. | Uses SDK `@lifecycle` / `observe_lifecycle(...)`, passes persisted outputs into training, and directly publishes the final ArtifactSet from exact handles. |
+| `runner.py` | Declares and coordinates one model-training run. | Uses SDK `@run` / `observe_run(...)`, passes persisted outputs into training, and directly publishes the final ArtifactSet from exact handles. |
 | `oclp.publishing` | Writes immutable payload bytes, hashes them, and persists canonical records. | Generic local persistence; no bike-specific policy. |
 | `mlflow.py` | Owns all interaction with local MLflow. | Opens MLflow runs, logs application-selected metrics/parameters, links OCLP references, and mirrors immutable payloads. |
 
@@ -25,7 +25,7 @@ All generated data is local and ignored by Git:
 ```text
 data/
   runs/<run-id>/       # payload bytes: CSV, CatBoost models, JSON reports
-  oclp-0.2-evidence/   # canonical OCLP records and producer catalog
+  oclp-0.3/            # canonical OCLP records and producer catalog
   mlflow/              # local MLflow SQLite metadata and its own artifacts
 ```
 
@@ -41,26 +41,25 @@ UCI source CSV
   -> final model
   -> model-release ArtifactSet
   -> offline holdout predictions and Evidence
-  -> release-inference smoke-test lifecycle
+  -> release-inference smoke-test run
 ```
 
-The `@lifecycle` declaration on `run_bike_lifecycle` lets the SDK derive the
-same `profiles.lifecycle.run_id` for every real Execution in the batch.
-Cyclops uses that explicit profile identity to group the batch as one
-lifecycle run; it does **not** add a synthetic root Execution or an
-orchestration edge. The data-derivation graph remains explicit: Artifacts and
-ArtifactSets flow into Executions, which produce new Artifacts or ArtifactSets.
-OCLP's graph and execution-acceptance validators run at the end of the demo.
+The `@run` declaration on `run_bike_training` lets the SDK derive the same
+UUID-based `profiles.run` binding for every real Execution in the batch.
+Cyclops uses that shared run context without adding a synthetic root Execution
+or an orchestration edge. The data-derivation graph remains explicit:
+Artifacts and ArtifactSets flow into Executions, which produce new Artifacts
+or ArtifactSets. OCLP's graph and execution-acceptance validators run at the
+end of the demo.
 
-After the batch lifecycle publishes its model-release ArtifactSet and manifest,
-`run_demo` opens a second lifecycle, **Release inference smoke test**, with run
-ID `<batch-run-id>-release-smoke`. It resolves the released model only through
+After the batch run publishes its model-release ArtifactSet and manifest,
+`run_demo` opens a second release-verification run with its own fresh UUID. It
+resolves the released model only through
 that manifest, persists one fixed request and response, and requires
-`Prediction response validation` Evidence to pass. This is deliberately a
-linked sibling lifecycle: the released model Artifact connects it to training,
-but it is not a synthetic child Execution of the training workflow. The smoke
-test calls the same decorated prediction callable that FastAPI uses; it does
-not start an HTTP server.
+`Prediction response validation` Evidence to pass. The released model Artifact
+connects it to training, but it is not a synthetic child Execution of the
+training workflow. The smoke test calls the same decorated prediction callable
+that FastAPI uses; it does not start an HTTP server.
 
 Each reusable computation is declared beside its actual Python callable with
 `@oclp.computation`. At run time the demo adds its observed Git source via
@@ -85,9 +84,6 @@ from oclp import csv_artifact
 
 
 @csv_artifact(
-    id=lambda *, dataset_id: (
-        f"urn:oclp-bike-demand:artifact:uci-bike-sharing-hourly:{dataset_id}:csv"
-    ),
     name="UCI Bike Sharing hourly source snapshot (CSV)",
     index=False,
     lineterminator="\n",
@@ -101,7 +97,7 @@ def download_source_csv(dataset_id: int = UCI_BIKE_SHARING_DATASET_ID) -> pd.Dat
 The decorated call returns a `CsvArtifact` handle, not an OCLP proxy. The
 function body remains ordinary pandas code and runs only inside an active
 `OclpRun`, where a store exists to persist its immutable payload. It creates no
-Computation, Execution, or lifecycle Event.
+Computation, Execution, or standard execution Event.
 
 The next boundary retains its `pd.DataFrame` parameter and ordinary feature
 logic. The runtime receives the resolved CSV Artifact handle, verifies its digest,
@@ -162,11 +158,10 @@ representation decorators against the same UCI fetch:
 | `"parquet"` | `@parquet_artifact` | `application/vnd.apache.parquet` | `ParquetArtifact` | `PandasParquetAdapter` |
 | `"json"` | `@json_artifact(serialization="pandas-table")` | pandas `orient="table"` `application/json` | `JsonArtifact` | `PandasJsonTableAdapter` |
 
-The format suffix belongs in each Artifact's logical ID—for example,
-`...:uci-bike-sharing-hourly:275:parquet`. These are different immutable
-representations with different bytes, so sharing an ID would incorrectly claim
-that they are the same Artifact. `dataset_id` still comes directly from the
-acquisition callable's parameter through its `id=` resolver.
+Each factory call creates one new Artifact record UUID. The formats have
+different payload bytes and therefore different Artifact digests. The
+application can retain `dataset_id` as an annotation when that source identity
+needs to be queryable; it is not encoded into the record UUID.
 
 The source-format contract test defines its own test-local input-only
 Computation. Passing it each of the three handles proves that the SDK verifies
@@ -174,11 +169,11 @@ the payload digest, deserializes it using the registered adapter, and passes an
 equivalent normalized DataFrame to a normal Python function. That probe is not
 part of the bike-demand application or any production run graph.
 
-### 2. The SDK observes one declared lifecycle and materializes its source-bound Computations
+### 2. The SDK observes one declared run and materializes its source-bound Computations
 
-`runner.py` declares its actual workflow with `@lifecycle`, resolves one Git
+`runner.py` declares its actual workflow with `@run`, resolves one Git
 source basis for the checkout, and activates it once with
-`observe_lifecycle(...)`. Each observed decorated function then materializes
+`observe_run(...)`. Each observed decorated function then materializes
 and publishes its source-bound Computation record itself. The SDK derives
 `implementation.locator` directly from the function—for example,
 `bike_demand_service.data.prepare_features`—and the runner can retrieve the
@@ -191,16 +186,15 @@ source = source_from_git_checkout(
     path="examples/bike-demand-service/src/bike_demand_service",
 )
 
-with observe_lifecycle(
-    run_bike_lifecycle,
+with observe_run(
+    run_bike_training,
     publisher=publisher,
-    run_id=run_id,
     source=source,
 ) as observed:
-    lifecycle_result = run_bike_lifecycle(
+    training_result = run_bike_training(
         observed=observed,
         tracker=tracker,
-        run_id=run_id,
+        materialization_id=materialization_id,
         fold_count=3,
         temporal_validation_rmse_max=250,
     )
@@ -230,19 +224,21 @@ later stages:
 
 ```python
 with LocalArtifactPublisher(...) as publisher:
-    with observe_lifecycle(
-        run_bike_lifecycle,
+    with observe_run(
+        run_bike_training,
         publisher=publisher,
-        run_id=run_id,
         source=source,
     ) as observed:
-        training_plan = create_training_plan(run_id=run_id, fold_count=3)
+        training_plan = create_training_plan(
+            materialization_id=materialization_id,
+            fold_count=3,
+        )
         source_snapshot = download_source_csv()
         prepared = prepare_features(source_snapshot, training_plan)
         prepare_outputs = observed.outputs_for(prepared)
         feature_table = prepare_outputs["features"]       # CsvArtifact
         folds = prepare_outputs["fold_definition"]        # JsonArtifact
-        # The remaining workflow calls run while this same lifecycle is active.
+        # The remaining workflow calls run while this same run context is active.
 ```
 
 Each temporal-fold training call receives `feature_table` and `folds`, not
@@ -260,12 +256,12 @@ training configuration as typed handles. The runner then calls
 manifest_name="Bike demand release manifest")` with the five exact output
 handles. The SDK materializes a separate `release-manifest.json` sidecar from
 those handles and their available upstream OCLP record closure. It carries the
-exact digest-bound ArtifactSet reference and therefore is not a sixth member:
+exact ArtifactSet UUID reference and therefore is not a sixth member:
 including it in the set would create a self-content cycle. This remains direct
 collection publication, not a fake package Computation: it has no locator,
-Execution, or lifecycle Events.
+Execution, or standard execution Events.
 
-`training_plan` is an input Artifact rather than a fake lifecycle output. Its
+`training_plan` is an input Artifact rather than a fake workflow output. Its
 decorator persists the configuration as JSON and its exact reference is bound
 to `prepare_features`. This makes the fold-count choice a real, portable input
 to the computation that uses it.
@@ -274,7 +270,7 @@ to the computation that uses it.
 
 The source snapshot is an external input Artifact; it is not an output of a
 fabricated ingest Execution. Feature preparation is a decorated multi-output
-Computation: the SDK creates its Execution, lifecycle Events, and output
+Computation: the SDK creates its Execution, standard execution Events, and output
 bindings automatically. The runner forwards its exact record references to
 MLflow and mirrors the resulting OCLP payload files into that nested MLflow
 run for convenient experiment inspection.
@@ -309,18 +305,18 @@ training, and holdout scoring and materializes their declared outputs.
 and marks the Execution failed when a required evaluator fails.
 Release publication is deliberately outside the automatic Computation path.
 `observed.publish_artifact_set(...)` publishes a named, immutable collection
-from exact handles but does not invent an Execution or lifecycle Events. A
-retry that represents a new release should use a new lifecycle run ID, which
+from exact handles but does not invent an Execution or standard execution Events. A
+retry that represents a new release receives a new run UUID, which
 creates a distinct ArtifactSet ID, digest, and manifest Artifact. The runner
 supplies the concise manifest name; the SDK does not derive it from the run.
 
-After that collection exists, `run_demo` opens a separate observed lifecycle
+After that collection exists, `run_demo` opens a separate observed run
 for the release inference smoke test. It calls
 `load_release_manifest(release_manifest_path)`, persists a deterministic
 request Artifact, and invokes `predict_bike_demand(...)` using the resolved
 `ArtifactSetHandle`. Its required `Prediction response validation`
 Evidence ensures a finite prediction with a request and release identity.
-Failure raises from the smoke lifecycle without changing the already immutable
+Failure raises from the smoke run without changing the already immutable
 training release.
 
 ### 5. Dataset, release, and quality concepts use the records that fit them
@@ -334,7 +330,7 @@ The selected model release is an ArtifactSet, not another opaque model file.
 It has named members for the final CatBoost model, feature contract, temporal
 evaluation report, training configuration, and input feature table. The runner
 publishes that ArtifactSet for release consumers directly from the five exact
-digest-bound Artifact handles, and the SDK writes a `release-manifest.json`
+Artifact handles, and the SDK writes a `release-manifest.json`
 sidecar. That sidecar carries the exact ArtifactSet reference, record body, and
 resolved upstream provenance closure without copying model or dataset bytes.
 Its set members remain individually addressable immutable Artifacts. The
@@ -380,7 +376,7 @@ checkout by editable path.
 ```bash
 cd examples/bike-demand-service
 uv sync
-uv run bike-demand run --run-id bike-demand-first-run
+uv run bike-demand run --materialization-id bike-demand-first-run
 ```
 
 All downloaded data, immutable payloads, OCLP records, the DuckDB catalog, and
@@ -392,7 +388,7 @@ To inspect the durable records with Cyclops, point its API at the generated
 directory:
 
 ```bash
-oclp-explorer --oclp-dir "$(pwd)/data/oclp-0.2-evidence"
+oclp-explorer --oclp-dir "$(pwd)/data/oclp-0.3"
 ```
 
 ## OCLP and MLflow have separate responsibilities
@@ -405,7 +401,7 @@ record store or Artifact registry.
 | Immutable model/data/prediction bytes | Canonical Artifacts at local file locations | Mirrored into the owning MLflow run for inspection |
 | Exact inputs and outputs | Digest-bound Execution references | Linked through tags and a small bridge manifest |
 | Quality gates | Evidence records | Metric comparison and inspection |
-| Batch grouping | Shared lifecycle-profile `run_id` across real Executions | Parent and nested MLflow runs |
+| Batch grouping | Shared UUID-based run-profile `run_id` across real Executions | Parent and nested MLflow runs |
 | Parameters and scalar metrics | Durable Execution/Evidence details where meaningful | Experiment-comparison UI |
 
 Every MLflow run is tagged with its OCLP Execution and Computation IDs and

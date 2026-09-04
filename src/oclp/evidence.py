@@ -98,6 +98,7 @@ def evaluate_evidence(
     id: str,
     observed_at: datetime,
     name: str | None = None,
+    profiles: ProfileBindings | None = None,
     evaluation_error: Exception | None = None,
     **kwargs: object,
 ) -> Evidence:
@@ -117,6 +118,7 @@ def evaluate_evidence(
             evaluator=evaluator,
             observed_at=observed_at,
             error=evaluation_error,
+            profiles=_merged_profiles(template.profiles, profiles),
         )
     try:
         result = function(*args, **kwargs)
@@ -133,6 +135,7 @@ def evaluate_evidence(
             evaluator=evaluator,
             observed_at=observed_at,
             error=error,
+            profiles=_merged_profiles(template.profiles, profiles),
         )
     outcome = cast(Literal["pass", "fail", "error"], result)
     diagnostic = _outcome_diagnostic(outcome, template.name)
@@ -144,6 +147,7 @@ def evaluate_evidence(
         outcome=outcome,
         observed_at=observed_at,
         diagnostic=diagnostic,
+        profiles=_merged_profiles(template.profiles, profiles),
     )
 
 
@@ -176,6 +180,7 @@ def _error_evidence(
     evaluator: Implementation,
     observed_at: datetime,
     error: Exception,
+    profiles: ProfileBindings | None,
 ) -> Evidence:
     return Evidence(
         id=id,
@@ -189,7 +194,29 @@ def _error_evidence(
             message=f"{type(error).__name__}: {error}",
             stage="evaluation",
         ),
+        profiles=profiles,
     )
+
+
+def _merged_profiles(
+    declared: ProfileBindings | None,
+    runtime: ProfileBindings | None,
+) -> ProfileBindings | None:
+    """Merge static evaluator profiles with one active runtime context."""
+
+    if declared is None:
+        return runtime
+    if runtime is None:
+        return declared
+    merged: ProfileBindings = dict(declared)
+    for profile_id, value in runtime.items():
+        existing = merged.get(profile_id)
+        if existing is not None and existing != value:
+            raise ValueError(
+                f"Evidence profile {profile_id!r} conflicts with active runtime"
+            )
+        merged[profile_id] = value
+    return merged
 
 
 def _callable_locator(function: Callable[..., object]) -> str:

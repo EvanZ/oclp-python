@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 from xml.etree.ElementTree import Element
 
 import pytest
@@ -71,8 +72,6 @@ def test_xml_artifact_round_trips_text_and_a_safe_element(tmp_path) -> None:
     with _publisher(tmp_path) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="xml-round-trip",
             source=_source(),
         ) as observed:
             result = publish_xml()
@@ -91,7 +90,7 @@ def test_xml_artifact_rejects_dtds_and_non_utf8_declarations(tmp_path) -> None:
         with pytest.raises(ArtifactAdapterError, match="DTD or entity"):
             artifact.persist(
                 publisher=publisher,
-                artifact_id="urn:example:artifact:unsafe-xml",
+                artifact_id=str(uuid4()),
                 name="Unsafe XML",
                 relative_path="unsafe.xml",
                 value='<!DOCTYPE report [<!ENTITY secret SYSTEM "file:///etc/passwd">]><report>&secret;</report>',
@@ -100,7 +99,7 @@ def test_xml_artifact_rejects_dtds_and_non_utf8_declarations(tmp_path) -> None:
         with pytest.raises(TypeError, match="UTF-8"):
             artifact.persist(
                 publisher=publisher,
-                artifact_id="urn:example:artifact:latin-xml",
+                artifact_id=str(uuid4()),
                 name="Latin XML",
                 relative_path="latin.xml",
                 value='<?xml version="1.0" encoding="ISO-8859-1"?><report/>',
@@ -112,12 +111,12 @@ def test_xml_artifact_decorator_acquires_a_durable_document(tmp_path) -> None:
     with _publisher(tmp_path) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="xml-acquisition",
             source=_source(),
         ) as observed:
             handle = acquire_xml()
             artifact = observed.artifact_for(handle)
 
-    assert artifact.artifact.id == "urn:example:artifact:acquire-xml:xml-acquisition"
+    from uuid import UUID
+
+    assert UUID(artifact.artifact.id).version == 4
     assert handle.read_verified_bytes() == b"<source><name>bike-demand</name></source>"

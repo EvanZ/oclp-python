@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 from urllib.parse import unquote, urlparse
+from uuid import UUID, uuid4
 
 from oclp.artifacts import (
     DEFAULT_ARTIFACT_ADAPTERS,
@@ -28,7 +29,7 @@ from oclp.artifacts import (
     ArtifactHandle,
     ArtifactType,
 )
-from oclp.canonical import canonical_json_bytes, record_digest
+from oclp.canonical import canonical_json_bytes
 from oclp.computations import (
     ArtifactSetInput,
     ComputationTemplate,
@@ -54,120 +55,121 @@ from oclp.models import (
     OclpRecord,
     ProfileBindings,
     RecordReference,
+    new_record_id,
 )
-from oclp.profiles.lifecycle import LIFECYCLE_PROFILE, LIFECYCLE_PROFILE_VERSION
+from oclp.profiles.run import RUN_PROFILE, RUN_PROFILE_VERSION
+from oclp.profiles.release_manifest import (
+    RELEASE_MANIFEST_PROFILE,
+    RELEASE_MANIFEST_PROFILE_VERSION,
+    ReleaseManifestBinding,
+)
 from oclp.publishing import LocalArtifactPublisher, PublishedArtifact, utc_now
 
 _ACTIVE_RUN: ContextVar[OclpRun | None] = ContextVar("oclp_active_run", default=None)
 CallableT = TypeVar("CallableT", bound=Callable[..., object])
-_LIFECYCLE_TEMPLATE_ATTRIBUTE = "__oclp_lifecycle_template__"
+_RUN_TEMPLATE_ATTRIBUTE = "__oclp_run_template__"
 
 
 @dataclass(frozen=True)
-class LifecycleTemplate:
-    """Static SDK declaration for one application-owned workflow boundary.
+class RunTemplate:
+    """Static SDK declaration for one application-owned run workflow.
 
-    A lifecycle is *not* an OCLP Core record and this declaration does not
-    manufacture a parent Execution. It supplies the project namespace and
-    human-readable run name used when :func:`observe_lifecycle` activates one
-    real :class:`OclpRun` for a decorated workflow.
+    A run is *not* an OCLP Core record and this declaration does not manufacture
+    a parent Execution. It supplies the human-readable name used when
+    :func:`observe_run` activates one real :class:`OclpRun` for a decorated
+    workflow.
     """
 
-    namespace: str
     name: str
 
-    def profile_for(self, run_id: str) -> ProfileBindings:
-        """Return the portable profile binding for one concrete lifecycle run."""
+    def profile_for(self, run_id: UUID) -> ProfileBindings:
+        """Return the portable profile binding for one concrete run."""
 
         return {
-            LIFECYCLE_PROFILE: {
-                "version": LIFECYCLE_PROFILE_VERSION,
-                "run_id": f"{self.namespace}:lifecycle:{run_id}",
-                # ``run_id`` is the durable machine identity. ``run_name``
-                # is the concise human label used by explorers.
+            RUN_PROFILE: {
+                "version": RUN_PROFILE_VERSION,
+                "run_id": str(run_id),
                 "run_name": self.name,
             }
         }
 
 
-def lifecycle(
+def run(
     *,
-    namespace: str,
     name: str,
 ) -> Callable[[CallableT], CallableT]:
-    """Declare an application workflow as one observed lifecycle boundary.
+    """Declare an application workflow as one observed run boundary.
 
     The decorated callable keeps its normal Python signature and behavior.
-    Pair it with :func:`observe_lifecycle` at the application bootstrap point
-    to configure a publisher, source basis, and concrete ``run_id``. The SDK
-    then derives the shared ``profiles.lifecycle`` binding for every real
+    Pair it with :func:`observe_run` at the application bootstrap point to
+    configure a publisher and source basis. The SDK generates a UUID for the
+    concrete run and derives the shared ``profiles.run`` binding for every real
     Execution produced by decorated calls inside the workflow.
     """
 
-    if not isinstance(namespace, str) or not namespace.startswith("urn:"):
-        raise ValueError("OCLP lifecycle namespaces must be URNs")
     if not isinstance(name, str) or not name:
-        raise ValueError("OCLP lifecycle names must be non-empty strings")
-    template = LifecycleTemplate(namespace=namespace, name=name)
+        raise ValueError("OCLP run names must be non-empty strings")
+    template = RunTemplate(name=name)
 
     def decorate(function: CallableT) -> CallableT:
         if not callable(function):
-            raise TypeError("@lifecycle can decorate only callable workflows")
-        setattr(function, _LIFECYCLE_TEMPLATE_ATTRIBUTE, template)
+            raise TypeError("@run can decorate only callable workflows")
+        setattr(function, _RUN_TEMPLATE_ATTRIBUTE, template)
         return function
 
     return decorate
 
 
-def lifecycle_template(workflow: Callable[..., object]) -> LifecycleTemplate:
-    """Return the static lifecycle declaration attached to ``workflow``."""
+def run_template(workflow: Callable[..., object]) -> RunTemplate:
+    """Return the static run declaration attached to ``workflow``."""
 
-    template = getattr(workflow, _LIFECYCLE_TEMPLATE_ATTRIBUTE, None)
-    if not isinstance(template, LifecycleTemplate):
+    template = getattr(workflow, _RUN_TEMPLATE_ATTRIBUTE, None)
+    if not isinstance(template, RunTemplate):
         name = getattr(workflow, "__qualname__", repr(workflow))
-        raise ValueError(f"workflow {name!r} has no OCLP lifecycle declaration")
+        raise ValueError(f"workflow {name!r} has no OCLP run declaration")
     return template
 
 
 @contextmanager
-def observe_lifecycle(
+def observe_run(
     workflow: Callable[..., object],
     *,
     publisher: LocalArtifactPublisher,
-    run_id: str,
+    run_id: UUID | None = None,
     source: ImplementationSource,
     parent_execution: RecordReference | None = None,
     profiles: ProfileBindings | None = None,
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS,
 ) -> Generator[OclpRun, None, None]:
-    """Activate the SDK runtime for one ``@lifecycle``-declared workflow.
+    """Activate the SDK runtime for one ``@run``-declared workflow.
 
     Storage and source selection remain application bootstrap concerns. The
-    SDK owns the resulting runtime, lifecycle profile binding, artifact
+    SDK owns the resulting runtime, UUID-based run profile binding, artifact
     materialization, Execution/Event publication, and failure capture. Extra
-    profiles may be supplied, but may not replace the lifecycle profile
+    profiles may be supplied, but may not replace the run profile
     derived from the workflow declaration.
     """
 
-    template = lifecycle_template(workflow)
+    template = run_template(workflow)
+    concrete_run_id = run_id or uuid4()
     merged_profiles: ProfileBindings = dict(profiles or {})
-    existing = merged_profiles.get(LIFECYCLE_PROFILE)
-    generated = template.profile_for(run_id)[LIFECYCLE_PROFILE]
+    existing = merged_profiles.get(RUN_PROFILE)
+    generated = template.profile_for(concrete_run_id)[RUN_PROFILE]
     if existing is not None and existing != generated:
         raise ValueError(
-            "observe_lifecycle derives profiles.lifecycle from the decorated "
-            "workflow and concrete run_id; do not override it"
+            "observe_run derives profiles.run from the decorated workflow and "
+            "concrete run UUID; do not override it"
         )
-    merged_profiles[LIFECYCLE_PROFILE] = generated
-    with OclpRun(
+    merged_profiles[RUN_PROFILE] = generated
+    observed = OclpRun(
         publisher=publisher,
-        namespace=template.namespace,
-        run_id=run_id,
         source=source,
         parent_execution=parent_execution,
         profiles=merged_profiles,
         artifact_adapters=artifact_adapters,
-    ) as observed:
+    )
+    observed.run_id = concrete_run_id
+    with observed:
         yield observed
 
 
@@ -195,12 +197,10 @@ class ArtifactSetHandle:
     """SDK handle for one immutable ArtifactSet.
 
     ArtifactSets have no payload file to load. The handle therefore carries the
-    published Core record and its digest-bound reference, allowing it to move
+    published Core record and its UUID reference, allowing it to move
     through application code without a second publisher call. When the caller
     requests SDK-owned release-manifest materialization, ``manifest`` points to
-    a durable sidecar JSON Artifact. It is deliberately *not* a set member:
-    the sidecar records this set's exact digest-bound reference, which a member
-    cannot do without creating a content-digest cycle.
+    a durable sidecar JSON Artifact. It is deliberately *not* a set member.
     """
 
     artifact_set: ArtifactSet
@@ -236,18 +236,18 @@ class ArtifactSetHandle:
 class OclpRun:
     """Run-scoped SDK policy for decorated Artifact and Computation observation.
 
-    ``namespace`` supplies the logical project identifier used for generated
-    Artifact, Execution, and Event IDs. It intentionally is not part of the
-    OCLP protocol: applications choose their own stable ID vocabulary.
+    This context supplies publishing and source policy for decorated Artifact
+    and Computation calls. A UUID-based ``profiles.run`` binding is added only
+    by :func:`observe_run`; plain ``OclpRun`` remains useful for scoped
+    observation that is not a batch run.
     """
 
     publisher: LocalArtifactPublisher
-    namespace: str
-    run_id: str
     source: ImplementationSource
     parent_execution: RecordReference | None = None
     profiles: ProfileBindings | None = None
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS
+    run_id: UUID | None = field(default=None, init=False)
     _token: Token[OclpRun | None] | None = field(default=None, init=False, repr=False)
     _value_bindings: dict[int, _ValueBinding] = field(
         default_factory=dict, init=False, repr=False
@@ -262,12 +262,6 @@ class OclpRun:
     _execution_computations: dict[str, RecordReference] = field(
         default_factory=dict, init=False, repr=False
     )
-
-    def __post_init__(self) -> None:
-        if not self.namespace.startswith("urn:"):
-            raise ValueError("OCLP run namespaces must be URNs")
-        if not self.run_id:
-            raise ValueError("OCLP run IDs must be non-empty")
 
     def __enter__(self) -> OclpRun:
         self._token = _ACTIVE_RUN.set(self)
@@ -340,7 +334,6 @@ class OclpRun:
     def publish_artifact_set(
         self,
         *,
-        key: str,
         name: str,
         members: Mapping[str, tuple[ArtifactHandle, str | None]],
         materialize_manifest: bool = False,
@@ -349,25 +342,23 @@ class OclpRun:
         """Publish a named collection of exact, previously published Artifacts.
 
         This is a publication operation, not a Computation: it creates no
-        synthetic Execution or lifecycle Event. Each mapping key is the stable
+        synthetic Execution or Event. Each mapping key is the stable
         member name; its tuple contains the resolved Artifact handle and an
         optional semantic role. The resulting ArtifactSet is immutable and
-        contains the members' digest-bound references.
+        contains the members' UUID references.
 
         ``materialize_manifest=True`` additionally writes an SDK-owned
         ``release-manifest.json`` sidecar after publishing the ArtifactSet.
-        It is not a member of the collection: the sidecar must carry the exact
-        digest-bound ArtifactSet reference, while including it in the set would
-        create an unsatisfiable self-content cycle. ``manifest_name`` is
+        It is not a member of the collection. ``manifest_name`` is
         required in that mode because record labels are application-owned. Its
         payload snapshots the exact ArtifactSet record and resolved upstream
-        OCLP record closure available to this local publisher. This remains a
-        direct collection-publication operation: it does not fabricate a
-        Computation, Execution, or Event.
+        OCLP record closure available to this local publisher. Its
+        ``release-manifest`` profile binding points one way to that set, so
+            consumers can associate the sidecar without claiming that a run
+        Execution produced it. This remains a direct collection-publication
+        operation: it does not fabricate a Computation, Execution, or Event.
         """
 
-        if not isinstance(key, str) or not key:
-            raise ValueError("ArtifactSet keys must be non-empty strings")
         if not isinstance(name, str) or not name:
             raise ValueError("ArtifactSet names must be non-empty strings")
         if not members:
@@ -407,12 +398,11 @@ class OclpRun:
             )
             member_handles[member_name] = artifact
 
-        artifact_set_id = f"{self.namespace}:artifact-set:{key}:{self.run_id}"
+        artifact_set_id = new_record_id()
         created_at = utc_now()
         artifact_set = ArtifactSet(
             id=artifact_set_id,
             name=name,
-            profiles=self.profiles,
             created_at=created_at,
             members=tuple(resolved_members),
         )
@@ -420,12 +410,19 @@ class OclpRun:
         manifest: ArtifactHandle | None = None
         if materialize_manifest:
             assert manifest_name is not None  # validated above for type narrowing.
+            # A run profile is defined only for Executions. The release
+            # sidecar therefore carries its own one-way profile binding to the
+            # exact ArtifactSet it describes; the set never refers back, so
+            # neither record becomes self-referential.
+            manifest_profiles: ProfileBindings = {
+                RELEASE_MANIFEST_PROFILE: ReleaseManifestBinding(
+                    version=RELEASE_MANIFEST_PROFILE_VERSION,
+                    artifact_set=reference,
+                ).model_dump(mode="json")
+            }
             manifest = ArtifactHandle(
                 published=self.publisher.json_artifact(
-                    artifact_id=(
-                        f"{self.namespace}:artifact:{key}:release-manifest:"
-                        f"{self.run_id}"
-                    ),
+                    artifact_id=new_record_id(),
                     name=manifest_name,
                     relative_path=_release_manifest_relative_path(artifact_set_id),
                     value=_release_manifest_document(
@@ -437,7 +434,7 @@ class OclpRun:
                         ),
                     ),
                     created_at=created_at,
-                    profiles=self.profiles,
+                    profiles=manifest_profiles,
                 )
             )
         return ArtifactSetHandle(
@@ -469,12 +466,7 @@ class OclpRun:
         call_index = self._call_counts.get(f"artifact:{base_name}", 0)
         self._call_counts[f"artifact:{base_name}"] = call_index + 1
         suffix = base_name if call_index == 0 else f"{base_name}-{call_index + 1}"
-        artifact_id = artifact_type.resolve_id(
-            function=function,
-            args=args,
-            kwargs=dict(kwargs),
-            default=f"{self.namespace}:artifact:{suffix}:{self.run_id}",
-        )
+        artifact_id = new_record_id()
         if artifact_type.name is None:
             raise ValueError(
                 "Artifact-producing decorators require an application-supplied "
@@ -769,11 +761,7 @@ class OclpRun:
         value: object,
         suffix: str,
     ) -> PublishedArtifact:
-        artifact_id = (
-            f"{self.namespace}:artifact:{spec.key}:{self.run_id}"
-            if spec.key is not None
-            else f"{self.namespace}:artifact:{suffix}:{self.run_id}:{port}"
-        )
+        artifact_id = new_record_id()
         if spec.name is None:  # guarded when @computation is declared.
             raise ValueError(
                 f"Computation output {port!r} requires an application-supplied "
@@ -819,9 +807,9 @@ class OclpRun:
         requested_outputs: tuple[str, ...],
     ) -> tuple[Execution, RecordReference]:
         execution = Execution(
-            id=f"{self.namespace}:execution:{suffix}:{self.run_id}",
+            id=new_record_id(),
             # Executions inherit the explicit, application-owned Computation
-            # label. IDs and lifecycle profiles identify the exact call.
+            # label. IDs and run profiles identify the exact call.
             name=computation_name,
             profiles=self.profiles,
             computation=computation_ref,
@@ -846,10 +834,7 @@ class OclpRun:
         emitted: list[Evidence] = []
         for index, evaluator in enumerate(template.required_evaluators or ()):
             template = evidence_template(evaluator)
-            evidence_id = (
-                f"{self.namespace}:evidence:{suffix}:{self.run_id}:"
-                f"{_evidence_key(evaluator, index)}"
-            )
+            evidence_id = new_record_id()
             try:
                 value = _evidence_value(evaluator=evaluator, result=result)
             except Exception as error:
@@ -884,10 +869,9 @@ class OclpRun:
         started_at: datetime,
         status: str,
     ) -> None:
-        prefix = execution.id.removeprefix(self.namespace + ":execution:")
         self.publisher.publish(
             Event(
-                id=f"{self.namespace}:event:{prefix}:started",
+                id=new_record_id(),
                 execution=execution_ref,
                 event_type="execution-started",
                 occurred_at=started_at,
@@ -896,7 +880,7 @@ class OclpRun:
         )
         self.publisher.publish(
             Event(
-                id=f"{self.namespace}:event:{prefix}:artifacts-published",
+                id=new_record_id(),
                 execution=execution_ref,
                 event_type="artifacts-published",
                 occurred_at=utc_now(),
@@ -906,7 +890,7 @@ class OclpRun:
         )
         self.publisher.publish(
             Event(
-                id=f"{self.namespace}:event:{prefix}:terminal",
+                id=new_record_id(),
                 execution=execution_ref,
                 event_type="execution-terminal",
                 occurred_at=utc_now(),
@@ -923,10 +907,9 @@ class OclpRun:
         started_at: datetime,
         error: BaseException,
     ) -> None:
-        prefix = execution.id.removeprefix(self.namespace + ":execution:")
         self.publisher.publish(
             Event(
-                id=f"{self.namespace}:event:{prefix}:started",
+                id=new_record_id(),
                 execution=execution_ref,
                 event_type="execution-started",
                 occurred_at=started_at,
@@ -935,7 +918,7 @@ class OclpRun:
         )
         self.publisher.publish(
             Event(
-                id=f"{self.namespace}:event:{prefix}:terminal",
+                id=new_record_id(),
                 execution=execution_ref,
                 event_type="execution-terminal",
                 occurred_at=utc_now(),
@@ -965,25 +948,22 @@ def _release_manifest_document(
 ) -> dict[str, JsonValue]:
     """Build the portable sidecar payload for one exact ArtifactSet.
 
-    The manifest is not an ArtifactSet member, so it can safely carry both the
-    canonical ArtifactSet body and its final digest-bound reference. A local or
-    remote service can consequently select the entire release as an immutable
+    The manifest is not an ArtifactSet member. It carries the canonical
+    ArtifactSet body and its UUID reference so a local or remote service can
+    select the entire release as an immutable
     input rather than reconstructing it from a model Artifact plus an
     application-specific string parameter.
     """
 
     return {
-        "oclp_release_manifest_version": "0.2",
+        "oclp_release_manifest_version": "0.3",
         "artifact_set": {
             "reference": artifact_set_reference.model_dump(mode="json"),
             "record": json.loads(canonical_json_bytes(artifact_set)),
         },
         "records": [
             {
-                "reference": RecordReference(
-                    id=record.id,
-                    digest=record_digest(record),
-                ).model_dump(mode="json"),
+                "reference": RecordReference(id=record.id).model_dump(mode="json"),
                 "record": json.loads(canonical_json_bytes(record)),
             }
             for record in records
@@ -995,8 +975,8 @@ def load_release_manifest(release_manifest_path: Path) -> ArtifactSetHandle:
     """Load one portable release sidecar into an exact local ArtifactSet handle.
 
     This is SDK infrastructure, not an application-specific service adapter.
-    It verifies the manifest's ArtifactSet record against its digest-bound
-    reference, resolves every member from the manifest closure, and admits
+    It verifies the manifest's ArtifactSet record against its UUID reference,
+    resolves every member from the manifest closure, and admits
     only locally available ``file:`` payloads. Applications can then pass the
     returned handle directly to a ``artifact_set_input(...)`` Computation.
     """
@@ -1020,7 +1000,7 @@ def load_release_manifest(release_manifest_path: Path) -> ArtifactSetHandle:
         )
     except Exception as error:
         raise ValueError(
-            "release manifest artifact_set must have a valid digest-bound reference"
+            "release manifest artifact_set must have a valid UUID reference"
         ) from error
     from oclp.validation import parse_record
 
@@ -1030,19 +1010,15 @@ def load_release_manifest(release_manifest_path: Path) -> ArtifactSetHandle:
         raise ValueError("release manifest ArtifactSet record is invalid") from error
     if not isinstance(artifact_set_record, ArtifactSet):
         raise ValueError("release manifest artifact_set record must be an ArtifactSet")
-    if (
-        artifact_set_record.id != artifact_set_reference.id
-        or record_digest(artifact_set_record) != artifact_set_reference.digest
-    ):
+    if artifact_set_record.id != artifact_set_reference.id:
         raise ValueError(
-            "release manifest ArtifactSet record does not match its digest-bound "
-            "reference"
+            "release manifest ArtifactSet record does not match its reference"
         )
 
     raw_records = document.get("records")
     if not isinstance(raw_records, list):
         raise ValueError("release manifest records must be a list")
-    artifact_records: dict[RecordReference, Artifact] = {}
+    artifact_records: dict[str, Artifact] = {}
     for entry in raw_records:
         if not isinstance(entry, dict):
             raise ValueError("release manifest records must contain JSON objects")
@@ -1053,17 +1029,16 @@ def load_release_manifest(release_manifest_path: Path) -> ArtifactSetHandle:
             raise ValueError(
                 "release manifest contains an invalid record entry"
             ) from error
-        if record.id != reference.id or record_digest(record) != reference.digest:
+        if record.id != reference.id:
             raise ValueError(
-                "release manifest record entry does not match its digest-bound "
-                "reference"
+                "release manifest record entry does not match its reference"
             )
         if isinstance(record, Artifact):
-            artifact_records[reference] = record
+            artifact_records[reference.id] = record
 
     handles: dict[str, ArtifactHandle] = {}
     for member in artifact_set_record.members:
-        artifact = artifact_records.get(member.artifact)
+        artifact = artifact_records.get(member.artifact.id)
         if artifact is None:
             raise ValueError(
                 f"release manifest lacks Artifact record for member {member.name!r}"
@@ -1102,7 +1077,7 @@ def _release_record_closure(
     records: Iterable[OclpRecord],
     member_references: tuple[RecordReference, ...],
 ) -> tuple[OclpRecord, ...]:
-    """Return resolved upstream provenance and lifecycle records for members.
+    """Return resolved upstream provenance and run records for members.
 
     A manifest is intentionally a snapshot, not another catalog. It carries
     the member Artifacts plus their producing Executions, inputs,
@@ -1113,50 +1088,42 @@ def _release_record_closure(
     """
 
     available = tuple(records)
-    by_digest = {record_digest(record).value: record for record in available}
+    by_id = {record.id: record for record in available}
     producers_by_output: dict[str, set[str]] = defaultdict(set)
     observations_by_execution: dict[str, set[str]] = defaultdict(set)
     for record in available:
-        digest = record_digest(record).value
         if isinstance(record, Execution):
             for references in (record.outputs or {}).values():
                 for reference in references:
-                    if reference.digest is not None:
-                        producers_by_output[reference.digest.value].add(digest)
+                    producers_by_output[reference.id].add(record.id)
         elif isinstance(record, Evidence):
-            if record.subject.digest is not None:
-                observations_by_execution[record.subject.digest.value].add(digest)
+            observations_by_execution[record.subject.id].add(record.id)
         elif isinstance(record, Event):
-            if record.execution.digest is not None:
-                observations_by_execution[record.execution.digest.value].add(digest)
+            observations_by_execution[record.execution.id].add(record.id)
 
-    pending = {
-        reference.digest.value
-        for reference in member_references
-        if reference.digest is not None and reference.digest.value in by_digest
-    }
+    pending = {reference.id for reference in member_references if reference.id in by_id}
     included: set[str] = set()
     while pending:
-        current_digest = min(pending)
-        pending.remove(current_digest)
-        if current_digest in included:
+        current_id = min(pending)
+        pending.remove(current_id)
+        if current_id in included:
             continue
-        record = by_digest.get(current_digest)
+        record = by_id.get(current_id)
         if record is None:
             continue
-        included.add(current_digest)
+        included.add(current_id)
         for reference in _release_record_references(record):
-            if reference.digest is not None and reference.digest.value in by_digest:
-                pending.add(reference.digest.value)
+            if reference.id in by_id:
+                pending.add(reference.id)
         if isinstance(record, Artifact):
-            pending.update(producers_by_output.get(current_digest, ()))
+            pending.update(producers_by_output.get(current_id, ()))
         if isinstance(record, Execution):
-            pending.update(observations_by_execution.get(current_digest, ()))
+            pending.update(observations_by_execution.get(current_id, ()))
 
     return tuple(
         sorted(
-            (by_digest[digest] for digest in included),
-            key=lambda record: (record.kind, record.id, record_digest(record).value),
+            (by_id[record_id] for record_id in included),
+            key=lambda record: (record.kind, record.id),
         )
     )
 
@@ -1221,12 +1188,6 @@ def active_run() -> OclpRun | None:
     """Return the ambient OCLP run, if automatic observation is active."""
 
     return _ACTIVE_RUN.get()
-
-
-def run(**kwargs: Any) -> OclpRun:
-    """Create the explicit runtime context used by decorated Computations."""
-
-    return OclpRun(**kwargs)
 
 
 def _requested_output_names(template: ComputationTemplate) -> tuple[str, ...]:
@@ -1327,7 +1288,7 @@ def _validate_artifact_set_handle(
         if resolved.reference != member.artifact:
             raise TypeError(
                 f"ArtifactSet input {name!r} member {member_name!r} does not match "
-                "the ArtifactSet's digest-bound reference"
+                "the ArtifactSet's UUID reference"
             )
         _validate_artifact_handle(
             handle=resolved,
@@ -1406,13 +1367,6 @@ def _evidence_value(*, evaluator: Callable[..., object], result: object) -> obje
                 f"{output_name!r}, but the Computation result has no such key"
             ) from error
     return result
-
-
-def _evidence_key(evaluator: Callable[..., object], index: int) -> str:
-    """Build a readable, collision-safe Evidence suffix from an evaluator."""
-
-    suffix = _callable_key(evaluator)
-    return f"{suffix}-{index + 1}"
 
 
 def _json_value(value: object) -> JsonValue | None:

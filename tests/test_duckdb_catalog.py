@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from uuid import NAMESPACE_URL, uuid5
+
 import pytest
 
 from oclp import Artifact, record_digest
 from oclp.catalog import (
-    AmbiguousRecordReferenceError,
     CatalogIntegrityError,
     RecordNotFoundError,
 )
@@ -16,7 +17,7 @@ from oclp.models import Digest, RecordReference
 
 def test_duckdb_catalog_resolves_exact_records_and_content_locations(tmp_path):
     artifact = Artifact(
-        id="urn:example:artifact:report",
+        id=_id("artifact:report"),
         media_type="application/json",
         digest=Digest(value="a" * 64),
         size=2,
@@ -37,27 +38,34 @@ def test_duckdb_catalog_resolves_exact_records_and_content_locations(tmp_path):
         assert catalog.artifacts_for_content(artifact.digest) == (artifact,)
 
 
-def test_duckdb_catalog_rejects_missing_ambiguous_and_mismatched_references(tmp_path):
+def test_duckdb_catalog_resolves_references_by_immutable_record_uuid(tmp_path):
     first = Artifact(
-        id="urn:example:artifact:mutable-name",
+        id=_id("artifact:mutable-name"),
         media_type="text/plain",
         digest=Digest(value="b" * 64),
         size=1,
         locations=("s3://example/first.txt",),
     )
-    second = first.model_copy(update={"locations": ("s3://example/second.txt",)})
+    second = Artifact(
+        id=_id("artifact:mutable-name-revision"),
+        media_type="text/plain",
+        digest=Digest(value="b" * 64),
+        size=1,
+        locations=("s3://example/second.txt",),
+    )
     with DuckdbCatalog(tmp_path / "catalog.duckdb") as catalog:
         first_reference = catalog.publish(first)
         catalog.publish(second)
 
-        with pytest.raises(AmbiguousRecordReferenceError):
-            catalog.resolve(RecordReference(id=first.id))
+        assert catalog.resolve(first_reference) == first
         with pytest.raises(RecordNotFoundError):
-            catalog.get("c" * 64)
+            catalog.resolve(RecordReference(id=_id("artifact:missing")))
         with pytest.raises(CatalogIntegrityError):
-            catalog.resolve(
-                RecordReference(
-                    id="urn:example:artifact:wrong", digest=first_reference.digest
-                )
+            catalog.publish(
+                first.model_copy(update={"locations": ("s3://example/changed.txt",)})
             )
         assert record_digest(first) != record_digest(second)
+
+
+def _id(name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"test:duckdb-catalog:{name}"))

@@ -11,24 +11,24 @@ The normative field contract is the [OCLP specification](https://evanz.github.io
 
 Every record-producing SDK declaration requires an application-supplied
 `name`: Computations, Evidence evaluators, Artifact-producing decorators,
-materialized computation outputs, lifecycles, ArtifactSets, and materialized
+materialized computation outputs, runs, ArtifactSets, and materialized
 release manifests. The SDK carries that label into the resulting record; it
 does not derive one from a function name, port, run ID, digest, timestamp, or
 filesystem path.
 
 Use a concise label that reads well in an explorer, such as `"Train fold"` or
-`"Validation metrics"`. Keep exact instance identity in the record `id`, a
-lifecycle `run_id`, input and output references, parameters, and timestamps.
-An Artifact representation class used *only as an input declaration* (for
-example, `inputs={"table": CsvArtifact}`) has no produced record and needs no
-name.
+`"Validation metrics"`. The SDK assigns every materialized Core record an
+opaque UUID. Inputs and outputs link to those UUIDs, while the run-profile
+`run_id`, parameters, timestamps, and application annotations carry the
+domain context. An Artifact representation class used *only as an input
+declaration* (for example, `inputs={"table": CsvArtifact}`) has no produced
+record and needs no name.
 
-When a local publisher sees the same logical Artifact ID and payload digest
-again, it reuses the existing record only if its declared immutable metadata,
-including `name`, matches. Changing a declared label therefore creates a new
-record revision with the same payload digest instead of silently retaining an
-old label. Retrieval locations remain catalog metadata rather than a reason to
-rewrite an OCLP record.
+An Artifact payload's SHA-256 digest identifies its bytes, not its Core record.
+Publishing the same bytes again produces a distinct Artifact record UUID; a
+catalog may still use the payload digest to find equivalent content and share
+retrieval locations. Mutating any declared record field is never a revision of
+an existing UUID—it must produce a new record.
 
 ## Declare the computation and its success check
 
@@ -63,6 +63,12 @@ def normalized_report_quality(report: dict[str, object]) -> str:
 def normalize_report(source: dict[str, object]) -> dict[str, object]:
     return {"title": str(source["title"]).strip()}
 ```
+
+The decorator's `id` is an application-supplied **declaration key**, not the
+`id` of an emitted Core `Computation` record. The SDK turns that key plus the
+selected immutable source into an opaque Computation UUID at publication time.
+This lets the declaration remain stable in source code while every Core record
+and every `RecordReference` stays UUID-only.
 
 `@evidence` preserves ordinary call semantics and attaches static metadata.
 Separate checks should be separate evaluators and Evidence records—not a
@@ -174,7 +180,7 @@ to make a graph look more complete.
 Use `@csv_artifact` for an effectful boundary that obtains a durable tabular input instead
 of deriving one. Its function body returns a `pandas.DataFrame`, while its
 public decorated call returns a `CsvArtifact` handle in an active `OclpRun`.
-It does **not** create a Computation, Execution, or lifecycle Event.
+It does **not** create a Computation, Execution, or Event.
 
 ```python
 import pandas as pd
@@ -232,7 +238,7 @@ record type. It derives the portable input port
 describes the ordinary in-memory value delivered to the function body. The
 registered `PandasCsvAdapter` verifies the payload SHA-256 digest, reads the
 CSV, and supplies the resulting DataFrame. The Execution records the original
-digest-bound Artifact reference in `inputs["source_snapshot"]`.
+Artifact UUID reference in `inputs["source_snapshot"]`.
 
 The annotation describes the value that the function actually receives; the
 Artifact handle identifies the durable representation. The adapter registry
@@ -259,20 +265,19 @@ Computation accepts.
 The bike-demand reference project includes a small source-format factory to
 prove that format choice remains at the Artifact boundary. All three decorated
 acquisition functions fetch the same logical UCI table, but each persists a
-different byte representation and therefore has its own Artifact ID and
-digest:
+different byte representation and therefore has its own payload digest. Each
+materialization also receives a fresh opaque Artifact record UUID:
 
 ```python
 from oclp import csv_artifact, json_artifact, parquet_artifact
 
 
-@csv_artifact(id="urn:example:artifact:uci-hourly:275:csv", name="UCI source (CSV)")
+@csv_artifact(name="UCI source (CSV)")
 def download_csv() -> pd.DataFrame:
     return fetch_the_external_table()
 
 
 @parquet_artifact(
-    id="urn:example:artifact:uci-hourly:275:parquet",
     name="UCI source (Parquet)",
     compression="zstd",
 )
@@ -281,7 +286,6 @@ def download_parquet() -> pd.DataFrame:
 
 
 @json_artifact(
-    id="urn:example:artifact:uci-hourly:275:json",
     name="UCI source (pandas table JSON)",
     serialization="pandas-table",
 )
@@ -335,8 +339,8 @@ location that does not match the materialization.
 
 | Artifact field | Source in the current CSV decorator | Why |
 | --- | --- | --- |
-| `id` | Explicit `id=` string or resolver; otherwise SDK-generated from the namespace, callable, and run ID | An Artifact ID is logical identity, not its content digest. For a known immutable source, make this stable and let the digest validate its bytes. |
-| `name` | Required `name=` decorator argument | Concise human-readable label for people and UIs; the ID and lifecycle profile carry run-specific identity. |
+| `id` | SDK-generated opaque UUID | Identifies this one immutable Artifact record. It is neither a logical source name nor a payload hash. |
+| `name` | Required `name=` decorator argument | Concise human-readable label for people and UIs; the ID and run profile carry run-specific identity. |
 | `kind` | SDK constant: `artifact` | The decorator creates one Artifact record. |
 | `media_type` | SDK constant: `text/csv` | The concrete decorator defines the persisted representation. |
 | `digest` | SDK SHA-256 of the serialized CSV bytes | Integrity must describe the real payload. |
@@ -353,9 +357,6 @@ bytes and therefore the digest.
 
 ```python
 @csv_artifact(
-    id=lambda *, dataset_id: (                       # resolved from function call
-        f"urn:example:artifact:uci-hourly:{dataset_id}"
-    ),
     name="UCI Bike Sharing hourly source snapshot",  # Artifact name
     index=False,                                      # do not write DataFrame index
     lineterminator="\n",                             # platform-independent bytes
@@ -366,12 +367,11 @@ def download_source_csv(dataset_id: int = 275) -> pd.DataFrame:
     return fetch_the_external_table()
 ```
 
-An `id=` resolver receives the decorated callable's bound named arguments.
-For an immutable source, repeated calls with the same logical ID must produce
-the same bytes: the local publisher reuses the first Artifact record when the
-digest matches and rejects a different digest for that ID. This is why the
-source's `dataset_id` belongs in its Artifact ID here, rather than in a
-run-specific SDK key.
+Every decorated call receives a new opaque Artifact UUID. The function's
+`dataset_id` is domain provenance, so record it in an application annotation
+when consumers need it; the Artifact `digest` validates the persisted bytes.
+Two materializations may describe equal bytes while remaining distinct Artifact
+records, which preserves their independent creation context.
 
 The active `OclpRun` is deliberately separate from the decorator: it supplies
 the publication context—store, namespace, and run ID—not the Artifact's CSV
@@ -400,7 +400,6 @@ from oclp.publishing import LocalArtifactPublisher
     outputs={
         "source_snapshot": CsvArtifact(
             name="Fetched report snapshot",
-            key="report-source",
             path="reports/source.csv",
         ),
     },
@@ -428,8 +427,8 @@ The wrapper returns the original `dataframe`; it does not replace application
 objects with an OCLP proxy. `outputs_for(...)` returns an internal resolved
 Artifact handle for the materialized `source_snapshot`, suitable for passing to
 a later Computation. The `CsvArtifact(...)` declaration is the explicit
-decision to persist a CSV snapshot, including its name, logical ID component,
-payload path, schema, and pandas serialization options. The SDK publishes the source-bound Computation if
+decision to persist a CSV snapshot, including its name, payload path, schema,
+and pandas serialization options. The SDK publishes the source-bound Computation if
 needed, that Artifact, an Execution whose
 `outputs["source_snapshot"]` references it, and start/publication/terminal
 Events. Passing the returned output handle to another declared Computation
@@ -544,7 +543,7 @@ formats and compatibility rules.
 An ArtifactSet is a Core collection record, not a storage format with bytes to
 serialize and not necessarily the output of a Computation. Publishing a named
 collection of already-materialized Artifacts is an SDK operation, so it must
-not fabricate a function, Computation, Execution, or lifecycle Event merely to
+not fabricate a function, Computation, Execution, or Event merely to
 make the graph look connected.
 
 ```python
@@ -553,7 +552,6 @@ from oclp import OclpRun
 
 with OclpRun(...) as observed:
     model_release = observed.publish_artifact_set(
-        key="candidate-model",
         name="Validated candidate model release",
         members={
             "model": (model, "model"),
@@ -568,27 +566,28 @@ with OclpRun(...) as observed:
 Each dictionary key is the stable ArtifactSet member name. Its value is a
 two-item tuple of an exact `ArtifactHandle` and an optional semantic role:
 `dict[str, tuple[ArtifactHandle, str | None]]`. The SDK publishes an immutable
-ArtifactSet whose members contain those handles' digest-bound references and
-returns an `ArtifactSetHandle`. When the `OclpRun` carries profiles such as a
-lifecycle profile, the ArtifactSet carries those same bindings so a viewer can
-associate this direct publication with the run. No member helper, record-ID
+ArtifactSet whose members contain those handles' UUID references and
+returns an `ArtifactSetHandle`. A direct ArtifactSet publication does **not**
+copy the Execution-only `run` profile: its relationship to a run is
+derived from the real Artifacts it collects. No member helper, record-ID
 construction, or application-owned publisher call is required.
 
 `materialize_manifest=True` asks the SDK to persist a deterministic
 `release-manifest.json` sidecar Artifact. The application must supply its
 `manifest_name`; the SDK returns its handle as `model_release.manifest`. It is
 not an ArtifactSet member: the sidecar records the exact digest-bound set
-reference, and making it a member would create a self-content cycle. The JSON
+reference through its `release-manifest` profile, and making it a member would
+create a self-content cycle. The JSON
 snapshot contains the exact ArtifactSet record plus
 the resolved upstream OCLP record closure available in the local publisher:
 their exact canonical Artifact, Execution, Computation, Evidence, Event, and
 nested ArtifactSet records as applicable. It does not duplicate model or
 dataset bytes.
 
-Because the sidecar is outside the collection, it records the final
-ArtifactSet ID *and* digest. `load_release_manifest(path)` verifies that exact
-binding and returns an `ArtifactSetHandle` with verified local handles for its
-members. The local publisher stores the sidecar under a collision-safe
+Because the sidecar is outside the collection, its `release-manifest` profile
+contains the final ArtifactSet UUID reference. `load_release_manifest(path)`
+verifies the sidecar payload and returns an `ArtifactSetHandle` with verified
+local handles for its members. The local publisher stores the sidecar under a collision-safe
 `release/.../release-manifest.json` payload path.
 
 ### Consume a release as one real ArtifactSet input
@@ -650,6 +649,7 @@ return value.
 ```python
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from oclp import Execution, evaluate_evidence
 from oclp.publishing import LocalArtifactPublisher
@@ -663,7 +663,6 @@ with LocalArtifactPublisher(
     computation_ref = publisher.publish(report_computation)
 
     source = publisher.json_artifact(
-        artifact_id="urn:example:artifact:source:example-run",
         name="Source document",
         relative_path="source.json",
         value={"title": "  Report  "},
@@ -671,14 +670,13 @@ with LocalArtifactPublisher(
     )
     report_value = normalize_report({"title": "  Report  "})
     result = publisher.json_artifact(
-        artifact_id="urn:example:artifact:result:example-run",
         name="Normalized report",
         relative_path="result.json",
         value=report_value,
         created_at=datetime.now(UTC),
     )
     execution = Execution(
-        id="urn:example:execution:normalize-report:example-run",
+        id=str(uuid4()),
         computation=computation_ref,
         inputs={"source": (source.reference,)},
         outputs={"report": (result.reference,)},
@@ -688,7 +686,7 @@ with LocalArtifactPublisher(
         evaluate_evidence(
             normalized_report_quality,
             report_value,
-            id="urn:example:evidence:normalize-report:example-run:quality",
+            id=str(uuid4()),
             subject=execution_ref,
             source=source_basis,
             observed_at=datetime.now(UTC),
@@ -709,9 +707,9 @@ set of gate results in a single run. The protocol permits other implementation
 strategies, but never permits a successful terminal status until all required
 evaluators have passed.
 
-## Record lifecycle and validate
+## Record chronology and validate
 
-Publish lifecycle Events explicitly. The optional lifecycle profile convention
+Publish execution Events explicitly. The optional run profile convention
 uses `execution-started` at sequence 0 and an optional terminal
 `execution-terminal`; it has no request event or nested attempt identity.
 
@@ -720,7 +718,7 @@ from oclp import Event, validate_execution_acceptance
 
 publisher.publish(
     Event(
-        id="urn:example:event:normalize-report:example-run:terminal",
+        id=str(uuid4()),
         execution=execution_ref,
         event_type="execution-terminal",
         occurred_at=datetime.now(UTC),
@@ -734,4 +732,4 @@ validate_execution_acceptance(publisher.records())
 For complete stores, also call `validate_derivation_graph()` and
 `validate_execution_hierarchy()`. See the [bike-demand example](bike-demand-example.md)
 for a multi-stage CatBoost run that uses these decorators, local Artifacts,
-Evidence, lifecycle Events, and MLflow correlation.
+Evidence, execution Events, and MLflow correlation.

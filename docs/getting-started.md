@@ -21,17 +21,18 @@ uv sync --all-groups
 
 ## Create and digest a record
 
-An `Artifact` describes immutable content. Its logical `id` is distinct from
-the SHA-256 `digest` of the content bytes.
+An `Artifact` describes immutable content. Its opaque UUID `id` is distinct
+from the SHA-256 `digest` of the content bytes.
 
 ```python
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from oclp import Artifact, canonical_json_bytes, record_digest
 from oclp.models import Digest
 
 artifact = Artifact(
-    id="urn:example:artifact:daily-report",
+    id=str(uuid4()),
     name="Daily report",
     media_type="application/json",
     digest=Digest(value="a" * 64),
@@ -41,12 +42,12 @@ artifact = Artifact(
 )
 
 canonical_record = canonical_json_bytes(artifact)
-record_reference_digest = record_digest(artifact)
+canonical_record_digest = record_digest(artifact)
 ```
 
-`record_digest` hashes the canonical JSON record, while `artifact.digest`
-identifies the Artifact's described payload bytes. They are intentionally
-different identities.
+`record_digest` hashes the canonical JSON record for store integrity, while
+`artifact.digest` identifies the Artifact's described payload bytes. Neither
+hash replaces the Artifact's UUID record identity.
 
 ## Parse untrusted JSON
 
@@ -57,9 +58,9 @@ record vocabulary:
 from oclp import parse_record
 
 record = parse_record({
-    "oclp_version": "0.2.0-draft",
+    "oclp_version": "0.3.0-draft",
     "kind": "artifact",
-    "id": "urn:example:artifact:daily-report",
+    "id": "4d3a9de8-5d9d-4c8d-a4bd-2761eea8fb85",
     "media_type": "application/json",
     "digest": {"algorithm": "sha256", "value": "a" * 64},
     "size": 42,

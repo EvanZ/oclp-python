@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from uuid import NAMESPACE_URL, uuid5
+
 import pytest
-from pydantic import ValidationError
 
 from oclp import (
     Artifact,
@@ -14,7 +15,6 @@ from oclp import (
     Execution,
     OrchestrationValidationError,
     ParameterValidationError,
-    record_digest,
     validate_derivation_graph,
     validate_execution_hierarchy,
 )
@@ -28,7 +28,7 @@ from oclp.models import (
 
 def _computation(name: str) -> Computation:
     return Computation(
-        id=f"urn:example:computation:{name}",
+        id=_id(f"computation:{name}"),
         implementation=Implementation(
             kind="other",
             locator=f"example:{name}",
@@ -42,7 +42,7 @@ def test_resolved_input_and_output_bindings_form_a_valid_dag() -> None:
     result = _artifact("result", "b")
     computation = _computation("transform")
     execution = Execution(
-        id="urn:example:execution:transform",
+        id=_id("execution:transform"),
         computation=_reference(computation),
         inputs={"source": (_reference(source),)},
         outputs={"result": (_reference(result),)},
@@ -55,12 +55,12 @@ def test_execution_may_publish_an_artifact_set_output() -> None:
     source = _artifact("source", "a")
     result = _artifact("result", "b")
     release = ArtifactSet(
-        id="urn:example:artifact-set:release",
+        id=_id("artifact-set:release"),
         members=(ArtifactSetMember(name="result", artifact=_reference(result)),),
     )
     computation = _computation("package")
     execution = Execution(
-        id="urn:example:execution:package",
+        id=_id("execution:package"),
         computation=_reference(computation),
         inputs={"source": (_reference(source),)},
         outputs={"result": (_reference(result),), "release": (_reference(release),)},
@@ -72,13 +72,13 @@ def test_execution_may_publish_an_artifact_set_output() -> None:
 def test_execution_may_consume_an_artifact_set_input() -> None:
     member = _artifact("model-state", "a")
     package = ArtifactSet(
-        id="urn:example:artifact-set:model-package",
+        id=_id("artifact-set:model-package"),
         members=(ArtifactSetMember(name="model.joblib", artifact=_reference(member)),),
     )
     result = _artifact("result", "b")
     computation = _computation("score")
     execution = Execution(
-        id="urn:example:execution:score",
+        id=_id("execution:score"),
         computation=_reference(computation),
         inputs={"model_package": (_reference(package),)},
         outputs={"result": (_reference(result),)},
@@ -87,19 +87,22 @@ def test_execution_may_consume_an_artifact_set_input() -> None:
     validate_derivation_graph((member, package, computation, execution, result))
 
 
-def test_execution_outputs_must_be_content_bound() -> None:
-    with pytest.raises(ValidationError, match="outputs must include record digests"):
-        Execution(
-            id="urn:example:execution:transform",
-            computation=RecordReference(id="urn:example:computation:transform"),
-            outputs={"result": (RecordReference(id="urn:example:artifact:result"),)},
-        )
+def test_execution_outputs_reference_artifacts_by_uuid_only() -> None:
+    execution = Execution(
+        id=_id("execution:transform"),
+        computation=RecordReference(id=_id("computation:transform")),
+        outputs={"result": (RecordReference(id=_id("artifact:result")),)},
+    )
+
+    assert execution.outputs == {
+        "result": (RecordReference(id=_id("artifact:result")),)
+    }
 
 
 def test_derivation_validator_rejects_redundant_implementation_digest() -> None:
     source = _artifact("source", "a")
     computation = Computation(
-        id="urn:example:computation:transform",
+        id=_id("computation:transform"),
         implementation=Implementation(
             kind="other",
             locator="example:transform",
@@ -119,12 +122,12 @@ def test_derivation_validator_rejects_redundant_implementation_digest() -> None:
 def test_derivation_validator_rejects_unresolved_inputs() -> None:
     computation = _computation("transform")
     execution = Execution(
-        id="urn:example:execution:transform",
+        id=_id("execution:transform"),
         computation=_reference(computation),
         inputs={
             "source": (
                 RecordReference(
-                    id="urn:example:artifact:missing", digest=Digest(value="c" * 64)
+                    id=_id("artifact:missing")
                 ),
             )
         },
@@ -138,7 +141,7 @@ def test_derivation_validator_rejects_a_cycle() -> None:
     source = _artifact("source", "a")
     computation = _computation("identity")
     execution = Execution(
-        id="urn:example:execution:identity",
+        id=_id("execution:identity"),
         computation=_reference(computation),
         inputs={"value": (_reference(source),)},
         outputs={"value": (_reference(source),)},
@@ -150,7 +153,7 @@ def test_derivation_validator_rejects_a_cycle() -> None:
 
 def test_derivation_validator_enforces_declared_execution_parameters() -> None:
     computation = Computation(
-        id="urn:example:computation:parameterized",
+        id=_id("computation:parameterized"),
         implementation=Implementation(
             kind="other",
             locator="example:parameterized",
@@ -166,12 +169,12 @@ def test_derivation_validator_enforces_declared_execution_parameters() -> None:
         ),
     )
     valid = Execution(
-        id="urn:example:execution:parameterized-valid",
+        id=_id("execution:parameterized-valid"),
         computation=_reference(computation),
         parameters={"fold_number": 2, "mode": "fast"},
     )
     invalid = Execution(
-        id="urn:example:execution:parameterized-invalid",
+        id=_id("execution:parameterized-invalid"),
         computation=_reference(computation),
         parameters={"fold_number": "two"},
     )
@@ -184,10 +187,10 @@ def test_derivation_validator_enforces_declared_execution_parameters() -> None:
 def test_execution_hierarchy_resolves_an_id_only_parent() -> None:
     computation = _computation("flow")
     parent = Execution(
-        id="urn:example:execution:parent-run", computation=_reference(computation)
+        id=_id("execution:parent-run"), computation=_reference(computation)
     )
     child = Execution(
-        id="urn:example:execution:child-task",
+        id=_id("execution:child-task"),
         computation=_reference(computation),
         parent_execution=RecordReference(id=parent.id),
     )
@@ -198,12 +201,12 @@ def test_execution_hierarchy_resolves_an_id_only_parent() -> None:
 def test_execution_hierarchy_rejects_a_cycle() -> None:
     computation = _computation("flow")
     first = Execution(
-        id="urn:example:execution:first",
+        id=_id("execution:first"),
         computation=_reference(computation),
-        parent_execution=RecordReference(id="urn:example:execution:second"),
+        parent_execution=RecordReference(id=_id("execution:second")),
     )
     second = Execution(
-        id="urn:example:execution:second",
+        id=_id("execution:second"),
         computation=_reference(computation),
         parent_execution=RecordReference(id=first.id),
     )
@@ -214,7 +217,7 @@ def test_execution_hierarchy_rejects_a_cycle() -> None:
 
 def _artifact(name: str, digest_character: str) -> Artifact:
     return Artifact(
-        id=f"urn:example:artifact:{name}",
+        id=_id(f"artifact:{name}"),
         media_type="application/octet-stream",
         digest=Digest(value=digest_character * 64),
         size=1,
@@ -222,4 +225,8 @@ def _artifact(name: str, digest_character: str) -> Artifact:
 
 
 def _reference(record: object) -> RecordReference:
-    return RecordReference(id=record.id, digest=record_digest(record))
+    return RecordReference(id=record.id)
+
+
+def _id(name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"test:derivation:{name}"))

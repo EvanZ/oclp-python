@@ -93,14 +93,13 @@ from oclp.models import (
 )
 from oclp.runtime import (
     ArtifactSetHandle,
-    LifecycleTemplate,
     OclpRun,
+    RunTemplate,
     active_run,
-    lifecycle,
-    lifecycle_template,
     load_release_manifest,
-    observe_lifecycle,
     run,
+    observe_run,
+    run_template,
 )
 from oclp.sources import source_from_git_checkout
 from oclp.validation import (
@@ -144,7 +143,6 @@ __all__ = [
     "JsonMappingAdapter",
     "LightGBMModelAdapter",
     "LightGBMModelArtifact",
-    "LifecycleTemplate",
     "NpyArrayAdapter",
     "NpyArtifact",
     "NpzArrayArchiveAdapter",
@@ -166,6 +164,7 @@ __all__ = [
     "ParameterValidationError",
     "OpaqueSource",
     "OclpRun",
+    "RunTemplate",
     "PandasArrowIpcAdapter",
     "PandasCsvAdapter",
     "PandasJsonLinesAdapter",
@@ -198,8 +197,6 @@ __all__ = [
     "evidence",
     "evidence_template",
     "many",
-    "lifecycle",
-    "lifecycle_template",
     "load_release_manifest",
     "json_artifact",
     "json_lines_artifact",
@@ -207,9 +204,10 @@ __all__ = [
     "npz_artifact",
     "parquet_artifact",
     "parse_record",
-    "observe_lifecycle",
     "record_digest",
     "run",
+    "observe_run",
+    "run_template",
     "source_from_git_checkout",
     "toml_artifact",
     "xml_artifact",
@@ -219,4 +217,4 @@ __all__ = [
     "yaml_artifact",
 ]
 
-__version__ = "0.2.0a0"
+__version__ = "0.3.0a0"

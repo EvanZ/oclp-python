@@ -62,9 +62,6 @@ def _fetch_source_frame(dataset_id: int) -> pd.DataFrame:
 
 
 @csv_artifact(
-    id=lambda *, dataset_id: (
-        f"urn:oclp-bike-demand:artifact:uci-bike-sharing-hourly:{dataset_id}:csv"
-    ),
     name="UCI Bike Sharing source (CSV)",
     index=False,
     lineterminator="\n",
@@ -78,9 +75,6 @@ def download_source_csv(
 
 
 @parquet_artifact(
-    id=lambda *, dataset_id: (
-        f"urn:oclp-bike-demand:artifact:uci-bike-sharing-hourly:{dataset_id}:parquet"
-    ),
     name="UCI Bike Sharing source (Parquet)",
     index=False,
     compression="zstd",
@@ -94,9 +88,6 @@ def download_source_parquet(
 
 
 @json_artifact(
-    id=lambda *, dataset_id: (
-        f"urn:oclp-bike-demand:artifact:uci-bike-sharing-hourly:{dataset_id}:json"
-    ),
     name="UCI Bike Sharing source (JSON)",
     serialization="pandas-table",
 )
@@ -139,17 +130,14 @@ def download_source_artifact(
     outputs={
         "features": CsvArtifact(
             name="Bike demand features",
-            key="feature-table",
             path="prepared/features.csv",
         ),
         "fold_definition": JsonArtifact(
             name="Temporal fold definition",
-            key="temporal-fold-definition",
             path="prepared/temporal-folds.json",
         ),
         "feature_contract": JsonArtifact(
             name="Feature contract",
-            key="feature-contract",
             path="prepared/feature-contract.json",
         ),
     },

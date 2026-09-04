@@ -1,4 +1,4 @@
-"""Run the complete, locally inspectable OCLP bike-demand lifecycle."""
+"""Run the complete, locally inspectable OCLP bike-demand workflow."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from pathlib import Path
 
 from oclp import (
     OclpRun,
-    lifecycle,
+    run,
     load_release_manifest,
-    observe_lifecycle,
+    observe_run,
     source_from_git_checkout,
     validate_derivation_graph,
     validate_execution_acceptance,
@@ -61,9 +61,10 @@ _RELEASE_SMOKE_REQUEST: dict[str, int | float] = {
 
 @dataclass(frozen=True)
 class DemoRunResult:
-    """Useful local destinations from an observed model lifecycle run."""
+    """Useful local destinations from one observed model-training run."""
 
-    run_id: str
+    materialization_id: str
+    training_run_id: str
     model_release: RecordReference
     model_release_manifest: RecordReference
     model_release_manifest_path: str
@@ -75,7 +76,7 @@ class DemoRunResult:
 
 
 @dataclass(frozen=True)
-class _ObservedLifecycleResult:
+class _ObservedRunResult:
     """The OCLP-owned outcome returned by the decorated workflow body."""
 
     model_release: RecordReference
@@ -91,22 +92,21 @@ class _ReleaseSmokeTestResult:
     response: RecordReference
 
 
-@lifecycle(
-    namespace="urn:oclp-bike-demand",
-    name="Bike demand model lifecycle",
+@run(
+    name="Bike demand model training",
 )
-def run_bike_lifecycle(
+def run_bike_training(
     *,
     observed: OclpRun,
     tracker: MLflowTracker,
-    run_id: str,
+    materialization_id: str,
     fold_count: int,
     temporal_validation_rmse_max: float,
-) -> _ObservedLifecycleResult:
+) -> _ObservedRunResult:
     """Execute the application's real data and model flow once.
 
-    ``@lifecycle`` gives every real decorated Computation the same SDK-owned
-    lifecycle profile. ``observed`` is used here only to retrieve exact OCLP
+    ``@run`` gives every real decorated Computation the same SDK-owned run
+    profile. ``observed`` is used here only to retrieve exact OCLP
     references for the existing, optional MLflow mirror; it does not publish
     Executions, Events, or Artifacts itself.
     """
@@ -115,7 +115,7 @@ def run_bike_lifecycle(
     # decorated fetcher returns a CsvArtifact handle. The runtime adapts its
     # verified CSV bytes to prepare_features' pandas input.
     training_plan = create_training_plan(
-        run_id=run_id,
+        materialization_id=materialization_id,
         fold_count=fold_count,
     )
     source_snapshot = download_source_csv()
@@ -265,7 +265,6 @@ def run_bike_lifecycle(
 
     with tracker.run("Publish bike-demand model release", nested=True):
         model_release = observed.publish_artifact_set(
-            key="model-release",
             name="Bike demand CatBoost release",
             members={
                 "model": (final_model_artifact, "model"),
@@ -322,26 +321,25 @@ def run_bike_lifecycle(
         )
         tracker.log_metrics(score_result["metrics"])
 
-    return _ObservedLifecycleResult(
+    return _ObservedRunResult(
         model_release=model_release.reference,
         model_release_manifest=model_release.manifest.reference,
         model_release_manifest_path=str(model_release.manifest.path),
     )
 
 
-@lifecycle(
-    namespace="urn:oclp-bike-demand",
+@run(
     name="Release inference smoke test",
 )
 def run_release_smoke_test(
     *,
     observed: OclpRun,
     release_manifest_path: Path,
-    run_id: str,
+    materialization_id: str,
 ) -> _ReleaseSmokeTestResult:
     """Score one fixed request with the model selected by a release manifest.
 
-    This is intentionally a separate lifecycle from training. Its prediction
+    This is intentionally a separate run from training. Its prediction
     Execution consumes the exact ArtifactSet selected by the preceding release
     manifest, so a lineage explorer shows a sibling inference branch connected
     through the released bundle rather than treating service work as part of
@@ -350,13 +348,13 @@ def run_release_smoke_test(
 
     release = load_release_manifest(release_manifest_path)
     request_artifact = persist_prediction_request(
-        request_id=f"{run_id}-request",
+        request_id=f"{materialization_id}-request",
         payload=_RELEASE_SMOKE_REQUEST,
     )
     result = predict_bike_demand(
         release,
         request_artifact,
-        request_id=f"{run_id}-request",
+        request_id=f"{materialization_id}-request",
     )
     evidence = observed.evidence_for(result)
     if any(record.outcome != "pass" for record in evidence):
@@ -369,19 +367,19 @@ def run_release_smoke_test(
 
 def run_demo(
     *,
-    run_id: str,
+    materialization_id: str,
     fold_count: int = 3,
     temporal_validation_rmse_max: float = 250,
     environment: DemoEnvironment | None = None,
 ) -> DemoRunResult:
-    """Bootstrap and execute the decorated bike-demand lifecycle.
+    """Bootstrap and execute the decorated bike-demand model-training run.
 
     This narrow application entry point chooses local filesystem destinations,
     a Git source basis, and the optional MLflow observer. The SDK owns the
-    active run and lifecycle profile for the real workflow above.
+    active run and UUID-based run profile for the real workflow above.
     """
 
-    _validate_run_id(run_id)
+    _validate_materialization_id(materialization_id)
     _validate_temporal_validation_rmse_max(temporal_validation_rmse_max)
     environment = environment or DemoEnvironment.default()
     environment.prepare()
@@ -394,45 +392,47 @@ def run_demo(
     with LocalArtifactPublisher(
         catalog_path=environment.catalog_path,
         record_root=environment.oclp_root,
-        payload_root=environment.run_root(run_id),
+        payload_root=environment.materialization_root(materialization_id),
     ) as publisher:
-        with tracker.run(f"Bike demand lifecycle — {run_id}"):
+        with tracker.run(f"Bike demand model training — {materialization_id}"):
             tracker.log_parameters(
                 {
-                    "run_id": run_id,
+                    "materialization_id": materialization_id,
                     "temporal_fold_count": fold_count,
                     "temporal_validation_rmse_max": temporal_validation_rmse_max,
                 }
             )
-            with observe_lifecycle(
-                run_bike_lifecycle,
+            with observe_run(
+                run_bike_training,
                 publisher=publisher,
-                run_id=run_id,
                 source=source,
             ) as observed:
-                lifecycle_result = run_bike_lifecycle(
+                assert observed.run_id is not None
+                training_run_id = str(observed.run_id)
+                training_result = run_bike_training(
                     observed=observed,
                     tracker=tracker,
-                    run_id=run_id,
+                    materialization_id=materialization_id,
                     fold_count=fold_count,
                     temporal_validation_rmse_max=temporal_validation_rmse_max,
                 )
-    release_smoke_run_id = f"{run_id}-release-smoke"
+    release_smoke_materialization_id = f"{materialization_id}-release-smoke"
     with LocalArtifactPublisher(
         catalog_path=environment.catalog_path,
         record_root=environment.oclp_root,
-        payload_root=environment.run_root(release_smoke_run_id),
+        payload_root=environment.materialization_root(release_smoke_materialization_id),
     ) as smoke_publisher:
-        with observe_lifecycle(
+        with observe_run(
             run_release_smoke_test,
             publisher=smoke_publisher,
-            run_id=release_smoke_run_id,
             source=source,
         ) as observed:
+            assert observed.run_id is not None
+            release_smoke_run_id = str(observed.run_id)
             smoke_result = run_release_smoke_test(
                 observed=observed,
-                release_manifest_path=Path(lifecycle_result.model_release_manifest_path),
-                run_id=release_smoke_run_id,
+                release_manifest_path=Path(training_result.model_release_manifest_path),
+                materialization_id=release_smoke_materialization_id,
             )
         records = smoke_publisher.records()
         validate_derivation_graph(records)
@@ -440,10 +440,11 @@ def run_demo(
         validate_execution_hierarchy(records)
 
     return DemoRunResult(
-        run_id=run_id,
-        model_release=lifecycle_result.model_release,
-        model_release_manifest=lifecycle_result.model_release_manifest,
-        model_release_manifest_path=lifecycle_result.model_release_manifest_path,
+        materialization_id=materialization_id,
+        training_run_id=training_run_id,
+        model_release=training_result.model_release,
+        model_release_manifest=training_result.model_release_manifest,
+        model_release_manifest_path=training_result.model_release_manifest_path,
         release_smoke_run_id=release_smoke_run_id,
         release_smoke_execution=smoke_result.execution,
         release_smoke_response=smoke_result.response,
@@ -452,9 +453,11 @@ def run_demo(
     )
 
 
-def _validate_run_id(run_id: str) -> None:
-    if not run_id or any(character.isspace() for character in run_id):
-        raise ValueError("run_id must be a non-empty value without whitespace")
+def _validate_materialization_id(materialization_id: str) -> None:
+    if not materialization_id or any(
+        character.isspace() for character in materialization_id
+    ):
+        raise ValueError("materialization_id must be a non-empty value without whitespace")
 
 
 def _validate_temporal_validation_rmse_max(value: float) -> None:

@@ -33,7 +33,7 @@ from typing import (
     get_origin,
 )
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from oclp.models import JsonValue, OclpModel, ProfileBindings
 
@@ -41,7 +41,6 @@ if TYPE_CHECKING:
     from oclp.publishing import LocalArtifactPublisher, PublishedArtifact
 
 Parameters = ParamSpec("Parameters")
-ArtifactIdResolver = Callable[..., str]
 _ARTIFACT_TYPE_ATTRIBUTE = "__oclp_artifact_type__"
 
 
@@ -79,7 +78,7 @@ class ArtifactHandle:
 
     @property
     def reference(self):
-        """Return the digest-bound OCLP reference for this Artifact."""
+        """Return the UUID-only OCLP reference for this Artifact."""
 
         return self.published.reference
 
@@ -141,8 +140,8 @@ class ArtifactHandleAdapter(ArtifactAdapter):
 
     Most Computations request a domain value such as a pandas DataFrame or a
     CatBoost model. Declarative collection builders instead need no payload;
-    they keep the handle so the runtime can use its exact digest-bound
-    reference in an ArtifactSet.
+    they keep the handle so the runtime can use its exact UUID reference in
+    an ArtifactSet.
     """
 
     def supports(self, artifact: ArtifactHandle, target_type: object) -> bool:
@@ -521,97 +520,16 @@ class ArtifactType(OclpModel, ABC):
     ``@csv_artifact`` acquisition and ``@computation(outputs=...)``.
     """
 
-    id: str | ArtifactIdResolver | None = None
     # ``ArtifactType`` also acts as an input compatibility declaration, such
     # as ``inputs={"table": CsvArtifact}``, where no record is produced.
     # Keep the field optional for that use; every record-producing path
     # validates that an application supplied it rather than inventing a label.
     name: str | None = Field(default=None, min_length=1)
-    key: str | None = Field(default=None, min_length=1)
     path: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
     schema_uri: str | None = Field(default=None, min_length=1)
     media_types: ClassVar[tuple[str, ...]] = ()
-
-    @field_validator("id")
-    @classmethod
-    def artifact_id_is_nonempty(cls, value: str | ArtifactIdResolver | None):
-        if isinstance(value, str) and not value:
-            raise ValueError("Artifact IDs must be non-empty")
-        return value
-
-    def resolve_id(
-        self,
-        *,
-        function: Callable[..., object],
-        args: tuple[object, ...],
-        kwargs: dict[str, object],
-        default: str,
-    ) -> str:
-        """Resolve an explicitly declared Artifact ID for one function call."""
-
-        declaration = self.id
-        if declaration is None:
-            return default
-        if isinstance(declaration, str):
-            return declaration
-
-        bound = signature(function).bind(*args, **kwargs)
-        bound.apply_defaults()
-        arguments = dict(bound.arguments)
-        resolver_signature = signature(declaration)
-        accepts_kwargs = any(
-            parameter.kind is Parameter.VAR_KEYWORD
-            for parameter in resolver_signature.parameters.values()
-        )
-        resolver_arguments = (
-            arguments
-            if accepts_kwargs
-            else {
-                name: value
-                for name, value in arguments.items()
-                if name in resolver_signature.parameters
-            }
-        )
-        try:
-            artifact_id = declaration(**resolver_arguments)
-        except TypeError as error:
-            raise ValueError(
-                "Artifact ID resolver must accept named parameters from "
-                f"{function.__qualname__}"
-            ) from error
-        if not isinstance(artifact_id, str) or not artifact_id:
-            raise ValueError("Artifact ID resolvers must return a non-empty string")
-        return artifact_id
-
-    def validate_id_resolver(self, function: Callable[..., object]) -> None:
-        """Reject ID resolvers that require parameters absent from the callable."""
-
-        if not callable(self.id):
-            return
-        function_signature = signature(function)
-        function_parameters = function_signature.parameters
-        accepts_var_kwargs = any(
-            parameter.kind is Parameter.VAR_KEYWORD
-            for parameter in function_parameters.values()
-        )
-        resolver_signature = signature(self.id)
-        missing = [
-            parameter.name
-            for parameter in resolver_signature.parameters.values()
-            if parameter.kind
-            in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
-            and parameter.default is Parameter.empty
-            and parameter.name not in function_parameters
-            and not accepts_var_kwargs
-        ]
-        if missing:
-            names = ", ".join(repr(name) for name in missing)
-            raise ValueError(
-                f"Artifact ID resolver parameters {names} do not exist on "
-                f"{function.__qualname__}"
-            )
 
     @abstractmethod
     def persist(
@@ -706,7 +624,6 @@ class CsvArtifact(ArtifactType):
 
 def csv_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     index: bool = False,
     lineterminator: str = "\n",
@@ -728,7 +645,6 @@ def csv_artifact(
 
     decorator = _decorate_artifact(
         CsvArtifact(
-            id=id,
             name=name,
             index=index,
             lineterminator=lineterminator,
@@ -797,7 +713,6 @@ class ParquetArtifact(ArtifactType):
 
 def parquet_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     index: bool = False,
     compression: Literal["snappy", "gzip", "brotli", "lz4", "zstd"] | None = "zstd",
@@ -809,7 +724,6 @@ def parquet_artifact(
 
     decorator = _decorate_artifact(
         ParquetArtifact(
-            id=id,
             name=name,
             index=index,
             compression=compression,
@@ -1639,7 +1553,6 @@ DEFAULT_ARTIFACT_ADAPTERS = ArtifactAdapterRegistry(
 
 def json_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
@@ -1656,7 +1569,6 @@ def json_artifact(
 
     decorator = _decorate_artifact(
         JsonArtifact(
-            id=id,
             name=name,
             profiles=profiles,
             annotations=annotations or {},
@@ -1672,7 +1584,6 @@ def json_artifact(
 
 def json_lines_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     newline: Literal["\n", "\r\n"] = "\n",
     sort_keys: bool = True,
@@ -1685,7 +1596,6 @@ def json_lines_artifact(
 
     return _artifact_decorator_for(
         JsonLinesArtifact(
-            id=id,
             name=name,
             newline=newline,
             sort_keys=sort_keys,
@@ -1699,7 +1609,6 @@ def json_lines_artifact(
 
 def arrow_ipc_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     preserve_index: bool = False,
     compression: Literal["lz4", "zstd"] | None = "zstd",
@@ -1711,7 +1620,6 @@ def arrow_ipc_artifact(
 
     return _artifact_decorator_for(
         ArrowIpcArtifact(
-            id=id,
             name=name,
             preserve_index=preserve_index,
             compression=compression,
@@ -1724,7 +1632,6 @@ def arrow_ipc_artifact(
 
 def npy_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
@@ -1734,7 +1641,6 @@ def npy_artifact(
 
     return _artifact_decorator_for(
         NpyArtifact(
-            id=id,
             name=name,
             profiles=profiles,
             annotations=annotations or {},
@@ -1745,7 +1651,6 @@ def npy_artifact(
 
 def npz_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     compression: Literal["stored", "deflated"] = "deflated",
     profiles: ProfileBindings | None = None,
@@ -1756,7 +1661,6 @@ def npz_artifact(
 
     return _artifact_decorator_for(
         NpzArtifact(
-            id=id,
             name=name,
             compression=compression,
             profiles=profiles,
@@ -1768,7 +1672,6 @@ def npz_artifact(
 
 def yaml_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     indent: int = 2,
     width: int = 88,
@@ -1781,7 +1684,6 @@ def yaml_artifact(
 
     return _artifact_decorator_for(
         YamlArtifact(
-            id=id,
             name=name,
             indent=indent,
             width=width,
@@ -1795,7 +1697,6 @@ def yaml_artifact(
 
 def toml_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     multiline_strings: bool = False,
     profiles: ProfileBindings | None = None,
@@ -1806,7 +1707,6 @@ def toml_artifact(
 
     return _artifact_decorator_for(
         TomlArtifact(
-            id=id,
             name=name,
             multiline_strings=multiline_strings,
             profiles=profiles,
@@ -1818,7 +1718,6 @@ def toml_artifact(
 
 def xml_artifact(
     *,
-    id: str | ArtifactIdResolver | None = None,
     name: str,
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
@@ -1832,7 +1731,6 @@ def xml_artifact(
 
     return _artifact_decorator_for(
         XmlArtifact(
-            id=id,
             name=name,
             profiles=profiles,
             annotations=annotations or {},
@@ -1872,7 +1770,6 @@ def _decorate_artifact(
             raise TypeError("Artifact decorators can only decorate a callable")
         if getattr(function, _ARTIFACT_TYPE_ATTRIBUTE, None) is not None:
             raise ValueError("a callable can have only one OCLP Artifact type")
-        artifact.validate_id_resolver(function)
         try:
             setattr(function, _ARTIFACT_TYPE_ATTRIBUTE, artifact)
         except (AttributeError, TypeError) as error:

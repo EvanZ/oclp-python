@@ -1,6 +1,6 @@
 [project]
 name = "oclp"
-version = "0.2.0a0"
+version = "0.3.0a0"
 description = "Reference Python SDK for the Open Computation Lifecycle Protocol"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -11,7 +11,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
-from oclp.canonical import canonical_json_bytes, record_digest
+from oclp.canonical import canonical_json_bytes
 from oclp.models import (
     OCLP_RECORD_ADAPTER,
     Computation,
@@ -58,20 +58,20 @@ def validate_derivation_graph(records: Iterable[OclpRecord]) -> None:
     output Artifact or ArtifactSet reference used by an Execution.
     """
 
-    by_digest = {record_digest(record).value: record for record in records}
+    by_id = _records_by_id(records)
     adjacency: dict[str, set[str]] = defaultdict(set)
 
-    for record in by_digest.values():
+    for record in by_id.values():
         if record.kind != "computation":
             continue
         if record.implementation.artifact is not None:
-            artifact_digest = _require_reference(
+            artifact_id = _require_reference(
                 record.implementation.artifact,
-                by_digest,
+                by_id,
                 expected_kind="artifact",
                 label=f"Computation {record.id} implementation artifact",
             )
-            artifact = by_digest[artifact_digest]
+            artifact = by_id[artifact_id]
             if (
                 record.implementation.digest is not None
                 and artifact.digest == record.implementation.digest
@@ -84,41 +84,41 @@ def validate_derivation_graph(records: Iterable[OclpRecord]) -> None:
         if isinstance(source, GitSource) and source.overlay is not None:
             _require_reference(
                 source.overlay,
-                by_digest,
+                by_id,
                 expected_kind="artifact_set",
                 label=f"Computation {record.id} Git source overlay",
             )
 
-    for execution_digest, record in by_digest.items():
+    for execution_id, record in by_id.items():
         if record.kind != "execution":
             continue
-        computation_digest = _require_reference(
+        computation_id = _require_reference(
             record.computation,
-            by_digest,
+            by_id,
             expected_kind="computation",
             label=f"Execution {record.id} computation",
         )
-        computation = by_digest[computation_digest]
+        computation = by_id[computation_id]
         assert isinstance(computation, Computation)
         _validate_execution_parameters(record, computation)
         for port, references in record.inputs.items():
             for reference in references:
-                input_digest = _require_reference(
+                input_id = _require_reference(
                     reference,
-                    by_digest,
+                    by_id,
                     expected_kind=("artifact", "artifact_set"),
                     label=f"Execution {record.id} input {port!r}",
                 )
-                adjacency[input_digest].add(execution_digest)
+                adjacency[input_id].add(execution_id)
         for port, references in (record.outputs or {}).items():
             for reference in references:
-                output_digest = _require_reference(
+                output_id = _require_reference(
                     reference,
-                    by_digest,
+                    by_id,
                     expected_kind=("artifact", "artifact_set"),
                     label=f"Execution {record.id} output {port!r}",
                 )
-                adjacency[execution_digest].add(output_digest)
+                adjacency[execution_id].add(output_id)
 
     _raise_on_cycle(adjacency)
 
@@ -173,23 +173,18 @@ def validate_execution_hierarchy(records: Iterable[OclpRecord]) -> None:
     immutable record-digest cycle.
     """
 
-    by_digest = {record_digest(record).value: record for record in records}
-    executions_by_id: dict[str, list[tuple[str, OclpRecord]]] = defaultdict(list)
-    for digest, record in by_digest.items():
-        if record.kind == "execution":
-            executions_by_id[record.id].append((digest, record))
+    by_id = _records_by_id(records)
 
     adjacency: dict[str, set[str]] = defaultdict(set)
-    for child_digest, record in by_digest.items():
+    for child_id, record in by_id.items():
         if record.kind != "execution" or record.parent_execution is None:
             continue
-        parent_digest = _resolve_execution_parent(
+        parent_id = _resolve_execution_parent(
             record.parent_execution,
-            by_digest,
-            executions_by_id,
+            by_id,
             label=f"Execution {record.id} parent_execution",
         )
-        adjacency[parent_digest].add(child_digest)
+        adjacency[parent_id].add(child_id)
 
     _raise_on_orchestration_cycle(adjacency)
 
@@ -207,30 +202,23 @@ def validate_execution_acceptance(records: Iterable[OclpRecord]) -> None:
     it does not evaluate the producer-defined evaluator itself.
     """
 
-    by_digest = {record_digest(record).value: record for record in records}
-    executions_by_id: dict[str, list[tuple[str, Execution]]] = defaultdict(list)
-    for digest, record in by_digest.items():
-        if isinstance(record, Execution):
-            executions_by_id[record.id].append((digest, record))
+    by_id = _records_by_id(records)
 
     evidence_records = tuple(
-        record for record in by_digest.values() if isinstance(record, Evidence)
+        record for record in by_id.values() if isinstance(record, Evidence)
     )
-    successful_execution_digests = _successful_execution_digests(
-        by_digest,
-        executions_by_id,
-    )
+    successful_execution_ids = _successful_execution_ids(by_id)
 
-    for execution_digest in successful_execution_digests:
-        execution = by_digest[execution_digest]
+    for execution_id in successful_execution_ids:
+        execution = by_id[execution_id]
         assert isinstance(execution, Execution)
-        computation_digest = _require_reference(
+        computation_id = _require_reference(
             execution.computation,
-            by_digest,
+            by_id,
             expected_kind="computation",
             label=f"Execution {execution.id} computation",
         )
-        computation = by_digest[computation_digest]
+        computation = by_id[computation_id]
         assert isinstance(computation, Computation)
 
         for evaluator in computation.required_evidence or ():
@@ -238,7 +226,7 @@ def validate_execution_acceptance(records: Iterable[OclpRecord]) -> None:
                 _evidence_satisfies_requirement(
                     evidence,
                     execution=execution,
-                    execution_digest=execution_digest,
+                    execution_id=execution_id,
                     evaluator=evaluator,
                 )
                 for evidence in evidence_records
@@ -257,10 +245,7 @@ def _require_reference(
     expected_kind: str | tuple[str, ...],
     label: str,
 ) -> str:
-    if reference.digest is None:
-        raise DerivationValidationError(f"{label} must include a record digest")
-    digest = reference.digest.value
-    target = records.get(digest)
+    target = records.get(reference.id)
     if target is None:
         raise DerivationValidationError(f"{label} does not resolve in this record set")
     expected_kinds = (
@@ -271,44 +256,24 @@ def _require_reference(
         raise DerivationValidationError(
             f"{label} must resolve to a {expected_label}, got {target.kind}"
         )
-    if target.id != reference.id:
-        raise DerivationValidationError(
-            f"{label} ID does not match its resolved record"
-        )
-    return digest
+    return reference.id
 
 
-def _successful_execution_digests(
+def _successful_execution_ids(
     records: dict[str, OclpRecord],
-    executions_by_id: dict[str, list[tuple[str, Execution]]],
 ) -> set[str]:
     successful: set[str] = set()
     for event in records.values():
         if not isinstance(event, Event) or event.status != "succeeded":
             continue
         reference = event.execution
-        if reference.digest is not None:
-            target = records.get(reference.digest.value)
-            if target is None or not isinstance(target, Execution):
-                raise AcceptanceValidationError(
-                    f"successful Event {event.id} execution does not resolve to an "
-                    "Execution"
-                )
-            if target.id != reference.id:
-                raise AcceptanceValidationError(
-                    f"successful Event {event.id} execution ID does not match its "
-                    "resolved record"
-                )
-            successful.add(reference.digest.value)
-            continue
-
-        matches = executions_by_id.get(reference.id, [])
-        if len(matches) != 1:
+        target = records.get(reference.id)
+        if target is None or not isinstance(target, Execution):
             raise AcceptanceValidationError(
-                f"successful Event {event.id} execution is ambiguous without a "
-                "record digest"
+                f"successful Event {event.id} execution does not resolve to an "
+                "Execution"
             )
-        successful.add(matches[0][0])
+        successful.add(reference.id)
     return successful
 
 
@@ -316,13 +281,11 @@ def _evidence_satisfies_requirement(
     evidence: Evidence,
     *,
     execution: Execution,
-    execution_digest: str,
+    execution_id: str,
     evaluator: object,
 ) -> bool:
     return (
-        evidence.subject.id == execution.id
-        and evidence.subject.digest is not None
-        and evidence.subject.digest.value == execution_digest
+        evidence.subject.id == execution_id == execution.id
         and canonical_json_bytes(evidence.evaluator) == canonical_json_bytes(evaluator)
         and evidence.outcome == "pass"
     )
@@ -349,37 +312,37 @@ def _raise_on_cycle(adjacency: dict[str, set[str]]) -> None:
 
 def _resolve_execution_parent(
     reference: RecordReference,
-    by_digest: dict[str, OclpRecord],
-    executions_by_id: dict[str, list[tuple[str, OclpRecord]]],
+    by_id: dict[str, OclpRecord],
     *,
     label: str,
 ) -> str:
-    if reference.digest is not None:
-        target = by_digest.get(reference.digest.value)
-        if target is None:
-            raise OrchestrationValidationError(
-                f"{label} does not resolve in this record set"
-            )
-        if target.kind != "execution":
-            raise OrchestrationValidationError(
-                f"{label} must resolve to an execution, got {target.kind}"
-            )
-        if target.id != reference.id:
-            raise OrchestrationValidationError(
-                f"{label} ID does not match its resolved record"
-            )
-        return reference.digest.value
-
-    matches = executions_by_id.get(reference.id, [])
-    if not matches:
+    target = by_id.get(reference.id)
+    if target is None:
         raise OrchestrationValidationError(
             f"{label} does not resolve in this record set"
         )
-    if len(matches) != 1:
+    if target.kind != "execution":
         raise OrchestrationValidationError(
-            f"{label} is ambiguous without a record digest"
+            f"{label} must resolve to an execution, got {target.kind}"
         )
-    return matches[0][0]
+    return reference.id
+
+
+def _records_by_id(records: Iterable[OclpRecord]) -> dict[str, OclpRecord]:
+    """Resolve a record collection by protocol identity and reject revisions."""
+
+    by_id: dict[str, OclpRecord] = {}
+    for record in records:
+        existing = by_id.get(record.id)
+        if (
+            existing is not None
+            and canonical_json_bytes(existing) != canonical_json_bytes(record)
+        ):
+            raise DerivationValidationError(
+                f"record ID {record.id} identifies more than one immutable record"
+            )
+        by_id[record.id] = record
+    return by_id
 
 
 def _raise_on_orchestration_cycle(adjacency: dict[str, set[str]]) -> None:

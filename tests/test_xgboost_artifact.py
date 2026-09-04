@@ -66,8 +66,6 @@ def test_xgboost_artifact_round_trips_through_sdk_owned_persistence(tmp_path) ->
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:example",
-            run_id="xgboost-round-trip",
             source=source,
         ) as observed:
             trained = train_xgboost()
@@ -81,7 +79,6 @@ def test_xgboost_artifact_round_trips_through_sdk_owned_persistence(tmp_path) ->
     score_execution = next(
         record
         for record in records
-        if isinstance(record, Execution)
-        and record.id == "urn:example:execution:score-xgboost:xgboost-round-trip"
+        if isinstance(record, Execution) and record.name == "Score XGBoost"
     )
     assert score_execution.inputs == {"model": (model_artifact.reference,)}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from datetime import datetime
 from typing import Annotated, Literal
+from uuid import UUID, uuid4
 
 from pydantic import (
     BaseModel,
@@ -16,7 +17,22 @@ from pydantic import (
     model_validator,
 )
 
-OCLP_DRAFT_VERSION = "0.2.0-draft"
+OCLP_DRAFT_VERSION = "0.3.0-draft"
+
+
+def new_record_id() -> str:
+    """Return a fresh opaque identity for one immutable Core record."""
+
+    return str(uuid4())
+
+
+def _canonical_uuid(value: str) -> str:
+    """Validate and normalize one opaque Core-record UUID."""
+
+    try:
+        return str(UUID(value))
+    except ValueError:
+        raise ValueError("record IDs must be UUID strings") from None
 
 
 class OclpModel(BaseModel):
@@ -40,8 +56,11 @@ class Digest(OclpModel):
 
 
 class RecordReference(OclpModel):
+    """A stable link to one immutable Core record by opaque identity."""
+
     id: str = Field(min_length=1)
-    digest: Digest | None = None
+
+    _validate_id = field_validator("id")(_canonical_uuid)
 
 
 class PortDefinition(OclpModel):
@@ -91,8 +110,6 @@ class GitSource(OclpModel):
 
     @model_validator(mode="after")
     def overlay_is_content_bound(self) -> GitSource:
-        if self.overlay is not None and self.overlay.digest is None:
-            raise ValueError("git source overlays must include a record digest")
         if self.overlay is not None and not self.dirty:
             raise ValueError("git source overlays require dirty=true")
         return self
@@ -103,12 +120,6 @@ class ArtifactSource(OclpModel):
 
     kind: Literal["artifact"] = "artifact"
     artifact: RecordReference
-
-    @model_validator(mode="after")
-    def artifact_reference_is_content_bound(self) -> ArtifactSource:
-        if self.artifact.digest is None:
-            raise ValueError("artifact sources must include a record digest")
-        return self
 
 
 class ServiceSource(OclpModel):
@@ -139,12 +150,6 @@ class Implementation(OclpModel):
     artifact: RecordReference | None = None
     source: ImplementationSource
 
-    @model_validator(mode="after")
-    def artifact_reference_is_content_bound(self) -> Implementation:
-        if self.artifact is not None and self.artifact.digest is None:
-            raise ValueError("implementation artifacts must include a record digest")
-        return self
-
 
 EvidenceOutcome = Literal["pass", "fail", "error"]
 
@@ -158,22 +163,22 @@ class Diagnostic(OclpModel):
     artifact: RecordReference | None = None
 
     @model_validator(mode="after")
-    def has_content_and_binds_detail_artifact(self) -> Diagnostic:
+    def has_content(self) -> Diagnostic:
         if not any((self.code, self.message, self.stage, self.artifact)):
             raise ValueError(
                 "diagnostics must include code, message, stage, or artifact"
             )
-        if self.artifact is not None and self.artifact.digest is None:
-            raise ValueError("diagnostic artifacts must include a record digest")
         return self
 
 
 class CoreRecord(OclpModel):
-    oclp_version: Literal["0.2.0-draft"] = OCLP_DRAFT_VERSION
+    oclp_version: Literal["0.3.0-draft"] = OCLP_DRAFT_VERSION
     id: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
+
+    _validate_id = field_validator("id")(_canonical_uuid)
 
     @model_validator(mode="after")
     def profile_names_are_nonempty(self) -> CoreRecord:
@@ -200,15 +205,6 @@ class Artifact(CoreRecord):
             raise ValueError("artifact created_at must include a UTC offset")
         return value
 
-    @model_validator(mode="after")
-    def identifier_is_independent_of_content_digest(self) -> Artifact:
-        if self.id == f"urn:{self.digest.algorithm}:{self.digest.value}":
-            raise ValueError(
-                "artifact ID must be a logical identifier, not its content digest"
-            )
-        return self
-
-
 class ArtifactSetMember(OclpModel):
     """One immutable Artifact assigned a stable name and semantic role."""
 
@@ -216,13 +212,6 @@ class ArtifactSetMember(OclpModel):
     artifact: RecordReference
     role: str | None = Field(default=None, min_length=1)
     required: bool = True
-
-    @model_validator(mode="after")
-    def artifact_reference_is_content_bound(self) -> ArtifactSetMember:
-        if self.artifact.digest is None:
-            raise ValueError("artifact set members must include an artifact digest")
-        return self
-
 
 class ArtifactSet(CoreRecord):
     """An immutable, named collection of exact Artifact references."""
@@ -294,12 +283,9 @@ class Execution(CoreRecord):
     requested_outputs: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def output_references_are_content_bound(self) -> Execution:
+    def parent_is_not_self(self) -> Execution:
         if self.parent_execution is not None and self.parent_execution.id == self.id:
             raise ValueError("an execution cannot be its own parent")
-        for references in (self.outputs or {}).values():
-            if any(reference.digest is None for reference in references):
-                raise ValueError("execution outputs must include record digests")
         return self
 
 
@@ -323,7 +309,7 @@ class GitCheckout(OclpModel):
 
 
 class ExecutionContext(OclpModel):
-    """Execution-local runtime context attached to a lifecycle observation."""
+    """Execution-local runtime context attached to one run observation."""
 
     git_checkout: GitCheckout | None = None
 

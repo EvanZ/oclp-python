@@ -46,12 +46,13 @@ named, immutable package (for example a model-serving release). The SDK treats
 that package as one derivation node; its named members remain an inventory
 overlay rather than fan-out input edges.
 
-## Logical identity and immutable revisions
+## Opaque identity and integrity digests
 
-An OCLP `id` is a logical name. A record digest binds one exact canonical record
-revision. An Artifact also has a content digest for the bytes it describes.
-Applications should publish `RecordReference` values with a digest whenever an
-exact immutable revision is required.
+Every Core record has one opaque UUID `id`, which identifies that exact
+immutable record. A `RecordReference` contains only that UUID. Stores may keep
+`record_digest` as an integrity check over canonical record JSON, but it is not
+part of the portable reference. An Artifact also has a separate `digest` for
+the payload bytes it describes.
 
 An Artifact or ArtifactSet may include `created_at` when its producer can
 assert the time it created that exact immutable record/materialization. It is
@@ -60,23 +61,19 @@ it when unknown; use `Event.occurred_at` for execution and publication
 chronology.
 
 ```python
-from oclp import record_digest
 from oclp.models import RecordReference
 
-reference = RecordReference(
-    id=artifact.id,
-    digest=record_digest(artifact),
-)
+reference = RecordReference(id=artifact.id)
 ```
 
-This distinction lets one logical Artifact gain a new immutable record revision
-when its metadata changes without claiming that its payload bytes changed.
+Changing Artifact metadata creates a new Artifact record UUID. Its payload
+digest may remain unchanged when the described bytes are unchanged.
 
 ## Profiles
 
 Profiles add opt-in semantic layers without expanding the portable core. This
 SDK includes optional validation adapters for the OCLP-maintained
-`dataset-snapshot`, `execution-context`, and `lifecycle` profiles under
+`dataset-snapshot`, `execution-context`, and `run` profiles under
 `oclp.profiles`. Their definitions, schemas, and conformance vectors are owned
 by the separate
 [OCLP Profiles](https://evanz.github.io/oclp-profiles/) package.

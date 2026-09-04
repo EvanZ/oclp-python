@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 import pytest
@@ -19,9 +20,10 @@ from oclp import (
     artifact_type,
     computation,
     computation_input_artifact_types,
+    computation_record,
     computation_template,
 )
-from oclp.models import Digest, Execution, PortDefinition, RecordReference
+from oclp.models import Execution, PortDefinition, RecordReference
 from oclp.publishing import LocalArtifactPublisher
 
 import bike_demand_service.data as data_module
@@ -108,7 +110,6 @@ def test_local_artifact_publisher_writes_a_payload_and_canonical_record(
         payload_root=run_root,
     ) as publisher:
         published = publisher.artifact_for_bytes(
-            artifact_id="urn:oclp-bike-demand:artifact:test-payload",
             name="Test payload",
             relative_path="payload.txt",
             content=b"bike demand\n",
@@ -120,8 +121,10 @@ def test_local_artifact_publisher_writes_a_payload_and_canonical_record(
     assert published.path.read_bytes() == b"bike demand\n"
     assert len(records) == 1
     assert isinstance(records[0], Artifact)
-    assert published.reference.digest is not None
-    assert (root / "artifact" / published.reference.digest.value[:2]).exists()
+    from oclp import record_digest
+
+    digest = record_digest(published.artifact)
+    assert (root / "artifact" / digest.value[:2] / f"{digest.value}.json").exists()
 
 
 def test_csv_artifact_decorator_requires_an_active_run() -> None:
@@ -149,8 +152,6 @@ def test_artifact_decorated_ingest_persists_its_returned_dataframe_as_source_sna
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="automatic-ingest",
             source=GitSource(
                 repository="https://github.com/example/bike-demand.git",
                 commit="a" * 40,
@@ -161,8 +162,6 @@ def test_artifact_decorated_ingest_persists_its_returned_dataframe_as_source_sna
                 observed.execution_for(source_snapshot)
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="repeat-ingest",
             source=GitSource(
                 repository="https://github.com/example/bike-demand.git",
                 commit="a" * 40,
@@ -173,13 +172,10 @@ def test_artifact_decorated_ingest_persists_its_returned_dataframe_as_source_sna
 
     assert isinstance(source_snapshot, ArtifactHandle)
     assert source_snapshot.path.read_text().startswith("instant,dteday,season")
-    assert source_snapshot.artifact.id == (
-        "urn:oclp-bike-demand:artifact:uci-bike-sharing-hourly:275:csv"
-    )
-    assert repeated_snapshot.reference == source_snapshot.reference
-    assert repeated_snapshot.artifact.created_at == source_snapshot.artifact.created_at
+    assert source_snapshot.reference != repeated_snapshot.reference
+    assert source_snapshot.artifact.digest == repeated_snapshot.artifact.digest
     assert source_snapshot.artifact.media_type == "text/csv"
-    assert sum(isinstance(record, Artifact) for record in records) == 1
+    assert sum(isinstance(record, Artifact) for record in records) == 2
     assert all(not isinstance(record, Execution) for record in records)
     template = artifact_type(download_source_csv)
     assert isinstance(template, CsvArtifact)
@@ -207,8 +203,6 @@ def test_source_factory_adapts_csv_parquet_and_table_json_to_equivalent_frames(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="source-format-factory",
             source=GitSource(
                 repository="https://github.com/example/bike-demand.git",
                 commit="a" * 40,
@@ -228,14 +222,10 @@ def test_source_factory_adapts_csv_parquet_and_table_json_to_equivalent_frames(
         isinstance(source_artifact, ArtifactHandle)
         for source_artifact in source_artifacts.values()
     )
-    assert {
-        source_artifact.artifact.id.rsplit(":", maxsplit=1)[-1]
-        for source_artifact in source_artifacts.values()
-    } == {"csv", "parquet", "json"}
     assert (
         len(
             {
-                source_artifact.reference.digest.value
+                source_artifact.artifact.digest.value
                 for source_artifact in source_artifacts.values()
             }
         )
@@ -248,7 +238,13 @@ def test_source_factory_adapts_csv_parquet_and_table_json_to_equivalent_frames(
         for record in records
         if isinstance(record, Execution)
         and record.computation.id
-        == "urn:oclp-bike-demand:test-computation:inspect-source-representation"
+        == computation_record(
+            _inspect_source_representation,
+            source=GitSource(
+                repository="https://github.com/example/bike-demand.git",
+                commit="a" * 40,
+            ),
+        ).id
     ]
     assert {execution.inputs["source_snapshot"][0] for execution in inspections} == {
         source_artifact.reference for source_artifact in source_artifacts.values()
@@ -275,8 +271,6 @@ def test_preparation_binds_and_adapts_the_csv_source_artifact(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="canonical-source",
             source=GitSource(
                 repository="https://github.com/example/bike-demand.git",
                 commit="a" * 40,
@@ -285,7 +279,7 @@ def test_preparation_binds_and_adapts_the_csv_source_artifact(
             source_snapshot = download_source_csv()
             assert isinstance(source_snapshot, ArtifactHandle)
             training_plan = create_training_plan(
-                run_id="canonical-source",
+                materialization_id="canonical-source",
                 fold_count=3,
             )
 
@@ -326,8 +320,6 @@ def test_preparation_rejects_an_artifact_handle_of_the_wrong_representation(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="wrong-source-representation",
             source=GitSource(
                 repository="https://github.com/example/bike-demand.git",
                 commit="a" * 40,
@@ -335,7 +327,7 @@ def test_preparation_rejects_an_artifact_handle_of_the_wrong_representation(
         ):
             source_snapshot = download_source_artifact("json")
             training_plan = create_training_plan(
-                run_id="wrong-source-representation",
+                materialization_id="wrong-source-representation",
                 fold_count=3,
             )
 
@@ -363,8 +355,6 @@ def test_csv_artifact_input_rejects_tampered_payload_before_computation(
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="tampered-source",
             source=GitSource(
                 repository="https://github.com/example/bike-demand.git",
                 commit="a" * 40,
@@ -372,7 +362,7 @@ def test_csv_artifact_input_rejects_tampered_payload_before_computation(
         ):
             source_snapshot = download_source_csv()
             training_plan = create_training_plan(
-                run_id="tampered-source",
+                materialization_id="tampered-source",
                 fold_count=3,
             )
             source_snapshot.path.write_text("tampered\n")
@@ -390,18 +380,20 @@ def test_training_plan_is_an_acquired_json_artifact(tmp_path: Path) -> None:
     ) as publisher:
         with OclpRun(
             publisher=publisher,
-            namespace="urn:oclp-bike-demand",
-            run_id="bike-demand-test",
             source=GitSource(
                 repository="https://github.com/example/bike-demand.git",
                 commit="a" * 40,
             ),
         ) as observed:
-            plan = create_training_plan(run_id="bike-demand-test", fold_count=3)
+            plan = create_training_plan(
+                materialization_id="bike-demand-test", fold_count=3
+            )
             with pytest.raises(ValueError, match="no Execution"):
                 observed.execution_for(plan)
 
-    assert plan.artifact.id.endswith(":training-plan:bike-demand-test")
+    from uuid import UUID
+
+    assert UUID(plan.artifact.id).version == 4
     assert plan.path.suffix == ".json"
     assert plan.artifact.media_type == "application/json"
 
@@ -418,7 +410,7 @@ def test_mlflow_bridge_tags_one_run_with_oclp_references(tmp_path: Path) -> None
     ) as publisher:
         payload = JsonArtifact(name="Bridge payload").handle(
             publisher.json_artifact(
-                artifact_id="urn:oclp-bike-demand:artifact:bridge-payload",
+                artifact_id=_id("artifact:bridge-payload"),
                 name="Bridge payload",
                 relative_path="bridge-payload.json",
                 value={"rows": 12},
@@ -501,4 +493,8 @@ def _source_rows(count: int) -> pd.DataFrame:
 
 
 def _reference(identifier: str) -> RecordReference:
-    return RecordReference(id=identifier, digest=Digest(value="0" * 64))
+    return RecordReference(id=_id(identifier))
+
+
+def _id(name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"test:bike-demand:{name}"))

@@ -53,4 +53,5 @@ with DuckdbCatalog(".oclp/catalog.duckdb") as catalog:
 
 The directory convention is SDK infrastructure, not a required OCLP storage
 format. Any compliant resolver may use a registry, bundle reader, database, or
-other mechanism while honoring exact digest-bound references.
+other mechanism while honoring exact UUID record references and verified
+payload digests.
