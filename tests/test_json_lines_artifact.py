@@ -7,7 +7,6 @@ from oclp.publishing import LocalArtifactPublisher
 
 
 @computation(
-    id="urn:example:computation:publish-json-lines",
     name="Publish JSON Lines",
     outputs={"records": JsonLinesArtifact(name="Example records")},
 )
@@ -16,7 +15,6 @@ def publish_json_lines() -> list[dict[str, int]]:
 
 
 @computation(
-    id="urn:example:computation:count-json-lines",
     name="Count JSON Lines",
     inputs={"records": JsonLinesArtifact},
 )

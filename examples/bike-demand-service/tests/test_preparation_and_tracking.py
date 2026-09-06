@@ -20,7 +20,6 @@ from oclp import (
     artifact_type,
     computation,
     computation_input_artifact_types,
-    computation_record,
     computation_template,
 )
 from oclp.models import Execution, PortDefinition, RecordReference
@@ -47,7 +46,6 @@ from bike_demand_service.modeling import (
 
 
 @computation(
-    id="urn:oclp-bike-demand:test-computation:inspect-source-representation",
     name="Test source representation adapter",
     input_ports=(
         PortDefinition(
@@ -237,14 +235,7 @@ def test_source_factory_adapts_csv_parquet_and_table_json_to_equivalent_frames(
         record
         for record in records
         if isinstance(record, Execution)
-        and record.computation.id
-        == computation_record(
-            _inspect_source_representation,
-            source=GitSource(
-                repository="https://github.com/example/bike-demand.git",
-                commit="a" * 40,
-            ),
-        ).id
+        and record.name == "Test source representation adapter"
     ]
     assert {execution.inputs["source_snapshot"][0] for execution in inspections} == {
         source_artifact.reference for source_artifact in source_artifacts.values()

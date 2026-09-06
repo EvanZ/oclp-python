@@ -20,7 +20,6 @@ from oclp.publishing import LocalArtifactPublisher  # noqa: E402
 
 
 @computation(
-    id="urn:example:computation:train-sklearn",
     name="Train sklearn",
     outputs={"model": SklearnModelArtifact(name="Example sklearn model")},
 )
@@ -31,7 +30,6 @@ def train_sklearn() -> LinearRegression:
 
 
 @computation(
-    id="urn:example:computation:score-sklearn",
     name="Score sklearn",
     inputs={"model": SklearnModelArtifact},
 )

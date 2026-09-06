@@ -22,7 +22,6 @@ pytest.importorskip("defusedxml")
 
 
 @computation(
-    id="urn:example:computation:publish-xml",
     name="Publish XML document",
     outputs={"document": XmlArtifact(name="Example XML document")},
 )
@@ -36,7 +35,6 @@ def acquire_xml() -> str:
 
 
 @computation(
-    id="urn:example:computation:read-xml-text",
     name="Read XML document text",
     inputs={"document": XmlArtifact},
 )
@@ -45,7 +43,6 @@ def read_xml_text(document: str) -> int:
 
 
 @computation(
-    id="urn:example:computation:read-xml-element",
     name="Read XML document element",
     inputs={"document": XmlArtifact},
 )

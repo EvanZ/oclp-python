@@ -64,7 +64,6 @@ from oclp import JsonLinesArtifact, YamlArtifact, computation
 
 
 @computation(
-    id="urn:example:computation:publish",
     name="Publish predictions and configuration",
     outputs={
         "predictions": JsonLinesArtifact(

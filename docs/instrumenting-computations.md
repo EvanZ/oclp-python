@@ -54,7 +54,6 @@ def normalized_report_quality(report: dict[str, object]) -> str:
 
 
 @computation(
-    id="urn:example:computation:normalize-report",
     name="Normalize report",
     input_ports=(PortDefinition(name="source", media_types=("application/json",)),),
     output_ports=(PortDefinition(name="report", media_types=("application/json",)),),
@@ -64,11 +63,12 @@ def normalize_report(source: dict[str, object]) -> dict[str, object]:
     return {"title": str(source["title"]).strip()}
 ```
 
-The decorator's `id` is an application-supplied **declaration key**, not the
-`id` of an emitted Core `Computation` record. The SDK turns that key plus the
-selected immutable source into an opaque Computation UUID at publication time.
-This lets the declaration remain stable in source code while every Core record
-and every `RecordReference` stays UUID-only.
+`@computation` has no application-supplied identity. When a decorated callable
+is first observed in an active `OclpRun`, the SDK emits one fresh opaque UUID
+`Computation` record for that callable. Later invocations of the same callable
+in that run reference the same Computation; a later observed run emits a new
+Computation record. Every Core record and every `RecordReference` therefore
+remains UUID-only without requiring an application declaration key.
 
 `@evidence` preserves ordinary call semantics and attaches static metadata.
 Separate checks should be separate evaluators and Evidence records—not a
@@ -90,6 +90,10 @@ source_basis = GitSource(
 report_computation = computation_record(normalize_report, source=source_basis)
 ```
 
+Calling `computation_record(...)` directly produces a fresh Computation record.
+Normal application code does not need to call it: `OclpRun` materializes the
+record when the decorated callable is first observed.
+
 `report_computation.required_evidence` contains the exact source-bound evaluator
 Implementation. The same binding appears in each resulting Evidence record;
 changing the evaluator code or observed source produces a different binding.
@@ -103,7 +107,6 @@ portable Computation interface and the Python call boundary honest:
 
 ```python
 @computation(
-    id="urn:example:computation:prepare-report",
     name="Prepare report",
     input_ports=(PortDefinition(name="source_snapshot"),),
 )
@@ -124,7 +127,6 @@ from oclp import CsvArtifact, JsonArtifact, computation
 
 
 @computation(
-    id="urn:example:computation:train-fold",
     name="Train one temporal fold",
     inputs={
         "feature_table": CsvArtifact,
@@ -217,7 +219,6 @@ an in-memory value. The SDK bridges those distinct concerns with an adapter:
 
 ```python
 @computation(
-    id="urn:example:computation:prepare-report",
     name="Prepare report",
     inputs={"source_snapshot": CsvArtifact},
 )
@@ -298,7 +299,6 @@ can accept all three forms while preserving a plain pandas signature:
 
 ```python
 @computation(
-    id="urn:example:computation:inspect-source",
     name="Inspect source",
     input_ports=(
         PortDefinition(
@@ -395,7 +395,6 @@ from oclp.publishing import LocalArtifactPublisher
 
 
 @computation(
-    id="urn:example:computation:fetch-report",
     name="Fetch report",
     outputs={
         "source_snapshot": CsvArtifact(
@@ -428,8 +427,8 @@ objects with an OCLP proxy. `outputs_for(...)` returns an internal resolved
 Artifact handle for the materialized `source_snapshot`, suitable for passing to
 a later Computation. The `CsvArtifact(...)` declaration is the explicit
 decision to persist a CSV snapshot, including its name, payload path, schema,
-and pandas serialization options. The SDK publishes the source-bound Computation if
-needed, that Artifact, an Execution whose
+and pandas serialization options. The SDK publishes one source-bound
+Computation for the callable in the active run, that Artifact, an Execution whose
 `outputs["source_snapshot"]` references it, and start/publication/terminal
 Events. Passing the returned output handle to another declared Computation
 records the exact Artifact reference and loads its verified bytes through the
@@ -446,7 +445,6 @@ separate `attribute=` selector to keep in sync.
 
 ```python
 @computation(
-    id="urn:example:computation:prepare-report",
     name="Prepare report",
     outputs={
         "table": CsvArtifact(name="Prepared report"),
@@ -471,7 +469,6 @@ from oclp import CatBoostModelArtifact, CsvArtifact, computation
 
 
 @computation(
-    id="urn:example:computation:train-model",
     name="Train model",
     inputs={"features": CsvArtifact},
     outputs={"model": CatBoostModelArtifact(name="Candidate model")},
@@ -498,7 +495,6 @@ from oclp import CsvArtifact, JsonArtifact, computation, many
 
 
 @computation(
-    id="urn:example:computation:aggregate-folds",
     name="Aggregate fold predictions",
     inputs={"fold_predictions": many(CsvArtifact)},
     outputs={"evaluation": JsonArtifact(name="Fold evaluation")},
@@ -522,7 +518,6 @@ def quality(evaluation: dict[str, float]) -> str:
 
 
 @computation(
-    id="urn:example:computation:evaluate",
     name="Evaluate",
     outputs={"evaluation": JsonArtifact(name="Evaluation")},
     requires=(quality,),
@@ -611,7 +606,6 @@ from oclp import (
 
 
 @computation(
-    id="urn:example:computation:predict",
     name="Predict demand",
     inputs={
         "model_release": artifact_set_input(
@@ -676,7 +670,6 @@ with LocalArtifactPublisher(
         created_at=datetime.now(UTC),
     )
     execution = Execution(
-        id=str(uuid4()),
         computation=computation_ref,
         inputs={"source": (source.reference,)},
         outputs={"report": (result.reference,)},
@@ -718,7 +711,6 @@ from oclp import Event, validate_execution_acceptance
 
 publisher.publish(
     Event(
-        id=str(uuid4()),
         execution=execution_ref,
         event_type="execution-terminal",
         occurred_at=datetime.now(UTC),

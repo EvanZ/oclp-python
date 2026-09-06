@@ -84,7 +84,6 @@ def create_training_plan(
 
 
 @computation(
-    id="urn:oclp-bike-demand:computation:train-fold-model",
     name="Train bike demand fold",
     inputs={
         "feature_table": CsvArtifact,
@@ -170,7 +169,6 @@ def _fold_for_number(
 
 
 @computation(
-    id="urn:oclp-bike-demand:computation:evaluate-candidate",
     name="Evaluate bike demand candidate",
     inputs={"fold_predictions": many(CsvArtifact)},
     outputs={
@@ -202,7 +200,6 @@ def evaluate_folds(
 
 
 @computation(
-    id="urn:oclp-bike-demand:computation:train-final-model",
     name="Train final bike demand model",
     inputs={
         "feature_table": CsvArtifact,
@@ -237,7 +234,6 @@ def train_final_model(
 
 
 @computation(
-    id="urn:oclp-bike-demand:computation:predict-bike-demand",
     name="Score bike demand holdout",
     inputs={
         "model": CatBoostModelArtifact,

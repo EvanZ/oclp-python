@@ -27,9 +27,11 @@ from fastapi import FastAPI, HTTPException
 from oclp import (
     ArtifactSetHandle,
     CatBoostModelArtifact,
+    GitSource,
     JsonArtifact,
     OclpRun,
     artifact_set_input,
+    capture_git_source_overlay,
     computation,
     evidence,
     json_artifact,
@@ -42,7 +44,7 @@ from pydantic import BaseModel, ConfigDict
 from bike_demand_service.data import FEATURE_COLUMNS, model_features
 from bike_demand_service.environment import DemoEnvironment
 
-_NAMESPACE = "urn:oclp-bike-demand"
+
 class PredictionRequest(BaseModel):
     """One feature-complete bike-demand scoring request."""
 
@@ -102,7 +104,6 @@ def prediction_response_validation(
 
 
 @computation(
-    id=f"{_NAMESPACE}:computation:predict-bike-demand-request",
     name="Bike demand prediction",
     inputs={
         "model_release": artifact_set_input(
@@ -167,10 +168,6 @@ def create_app(
     environment = environment or DemoEnvironment.default()
     environment.prepare()
     release = load_release_manifest(release_manifest_path)
-    source = source_from_git_checkout(
-        environment.project_root,
-        path="examples/bike-demand-service/src/bike_demand_service/service.py",
-    )
     app = FastAPI(
         title="OCLP bike-demand inference demo",
         version="0.1.0",
@@ -197,6 +194,18 @@ def create_app(
             record_root=environment.oclp_root,
             payload_root=environment.inference_root(request_id),
         ) as publisher:
+            source = source_from_git_checkout(
+                environment.project_root,
+                path="examples/bike-demand-service/src/bike_demand_service/service.py",
+            )
+            if isinstance(source, GitSource) and source.dirty:
+                source = capture_git_source_overlay(
+                    environment.project_root,
+                    source=source,
+                    publisher=publisher,
+                    name="Bike-demand service source overlay",
+                    relative_path=f"source-overlays/{request_id}",
+                )
             with OclpRun(
                 publisher=publisher,
                 source=source,

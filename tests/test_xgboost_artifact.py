@@ -24,7 +24,6 @@ from oclp.publishing import LocalArtifactPublisher  # noqa: E402
 
 
 @computation(
-    id="urn:example:computation:train-xgboost",
     name="Train XGBoost",
     outputs={"model": XGBoostModelArtifact(name="Example XGBoost model")},
 )
@@ -43,7 +42,6 @@ def train_xgboost() -> object:
 
 
 @computation(
-    id="urn:example:computation:score-xgboost",
     name="Score XGBoost",
     inputs={"model": XGBoostModelArtifact},
 )

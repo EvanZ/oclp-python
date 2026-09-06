@@ -8,15 +8,16 @@ from pathlib import Path
 
 from oclp import (
     OclpRun,
-    run,
+    capture_git_source_overlay,
     load_release_manifest,
     observe_run,
+    run,
     source_from_git_checkout,
     validate_derivation_graph,
     validate_execution_acceptance,
     validate_execution_hierarchy,
 )
-from oclp.models import RecordReference
+from oclp.models import GitSource, RecordReference
 from oclp.publishing import LocalArtifactPublisher
 
 from bike_demand_service.data import (
@@ -383,10 +384,6 @@ def run_demo(
     _validate_temporal_validation_rmse_max(temporal_validation_rmse_max)
     environment = environment or DemoEnvironment.default()
     environment.prepare()
-    source = source_from_git_checkout(
-        environment.project_root,
-        path="examples/bike-demand-service/src/bike_demand_service",
-    )
     tracker = create_mlflow_tracker(MLflowSettings(environment.mlflow_root))
 
     with LocalArtifactPublisher(
@@ -394,6 +391,18 @@ def run_demo(
         record_root=environment.oclp_root,
         payload_root=environment.materialization_root(materialization_id),
     ) as publisher:
+        source = source_from_git_checkout(
+            environment.project_root,
+            path="examples/bike-demand-service/src/bike_demand_service",
+        )
+        if isinstance(source, GitSource) and source.dirty:
+            source = capture_git_source_overlay(
+                environment.project_root,
+                source=source,
+                publisher=publisher,
+                name="Bike-demand training source overlay",
+                relative_path=f"source-overlays/{materialization_id}",
+            )
         with tracker.run(f"Bike demand model training — {materialization_id}"):
             tracker.log_parameters(
                 {
@@ -457,7 +466,9 @@ def _validate_materialization_id(materialization_id: str) -> None:
     if not materialization_id or any(
         character.isspace() for character in materialization_id
     ):
-        raise ValueError("materialization_id must be a non-empty value without whitespace")
+        raise ValueError(
+            "materialization_id must be a non-empty value without whitespace"
+        )
 
 
 def _validate_temporal_validation_rmse_max(value: float) -> None:

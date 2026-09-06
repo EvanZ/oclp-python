@@ -236,7 +236,7 @@ class ArtifactSet(CoreRecord):
 
 
 class Computation(CoreRecord):
-    """A reusable, source-bound computation interface and implementation."""
+    """An immutable, source-bound computation interface and implementation."""
 
     kind: Literal["computation"] = "computation"
     implementation: Implementation

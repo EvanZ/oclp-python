@@ -49,7 +49,6 @@ from oclp.publishing import LocalArtifactPublisher
 
 
 @computation(
-    id="urn:example:computation:normalize-report",
     name="Normalize report",
     input_ports=(PortDefinition(name="source", media_types=("application/json",)),),
     output_ports=(PortDefinition(name="report", media_types=("application/json",)),),
@@ -61,7 +60,6 @@ def normalize_report(source: str) -> str:
 
 
 @computation(
-    id="urn:example:computation:use-release",
     name="Use validated release",
     inputs={
         "release": artifact_set_input({"configuration": JsonArtifact}),
@@ -96,11 +94,16 @@ def test_computation_decorator_keeps_callable_behavior_and_derives_locator() -> 
     )
 
     assert normalize_report(" report ") == "report"
-    assert computation_template(normalize_report).id != record.id
-    assert UUID(record.id).version == 5
+    assert not hasattr(computation_template(normalize_report), "id")
+    assert UUID(record.id).version == 4
     assert record.implementation.locator.endswith(".normalize_report")
     assert record.input_ports[0].name == "source"
     assert record.output_ports[0].name == "report"
+
+
+def test_computation_has_no_application_supplied_identity() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'id'"):
+        computation(id="not-a-core-record-id", name="No declaration identity")  # type: ignore[call-arg]
 
 
 def test_oclp_run_exposes_the_computation_for_an_observed_result(tmp_path) -> None:
@@ -120,8 +123,39 @@ def test_oclp_run_exposes_the_computation_for_an_observed_result(tmp_path) -> No
             result = normalize_report(" report ")
             computation = observed.computation_for(result)
 
-    assert UUID(computation.id).version == 5
-    assert computation.id == computation_record(normalize_report, source=source).id
+    assert UUID(computation.id).version == 4
+
+
+def test_oclp_run_reuses_one_computation_per_callable_and_materializes_fresh_per_run(
+    tmp_path,
+) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with OclpRun(publisher=publisher, source=source) as first_run:
+            first_result = normalize_report(" first ")
+            second_result = normalize_report(" second ")
+            first_computation = first_run.computation_for(first_result)
+            second_computation = first_run.computation_for(second_result)
+        with OclpRun(publisher=publisher, source=source) as second_run:
+            third_result = normalize_report(" third ")
+            third_computation = second_run.computation_for(third_result)
+        records = publisher.records()
+
+    assert first_computation == second_computation
+    assert third_computation != first_computation
+    assert computation_record(normalize_report, source=source).id not in {
+        first_computation.id,
+        third_computation.id,
+    }
+    computations = [record for record in records if record.kind == "computation"]
+    assert len(computations) == 2
 
 
 def test_observe_run_derives_one_shared_uuid_profile_for_real_executions(
@@ -170,7 +204,6 @@ def test_computation_rejects_input_ports_without_matching_parameters() -> None:
     with pytest.raises(ValueError, match="do not match parameters"):
 
         @computation(
-            id="urn:example:computation:input-mismatch",
             name="Input mismatch",
             input_ports=(PortDefinition(name="source_snapshot"),),
         )
@@ -180,7 +213,6 @@ def test_computation_rejects_input_ports_without_matching_parameters() -> None:
 
 def test_computation_derives_port_metadata_from_an_artifact_type() -> None:
     @computation(
-        id="urn:example:computation:read-csv",
         name="Read CSV",
         inputs={"source_snapshot": CsvArtifact},
     )
@@ -375,7 +407,6 @@ def test_oclp_run_materializes_a_release_manifest_from_exact_handles(
 
 
 @computation(
-    id="urn:example:computation:parameterized-report",
     name="Produce a parameterized report",
     input_ports=(PortDefinition(name="source"),),
     outputs={"report": JsonArtifact(name="Parameterized report")},
@@ -426,18 +457,17 @@ def test_computation_inferrs_json_parameter_contract_from_callable_signature(
         with OclpRun(
             publisher=publisher,
             source=source,
-        ):
-            parameterized_report(
+        ) as observed:
+            result = parameterized_report(
                 "source text",
                 fold_number=2,
                 scratch_path=tmp_path / "scratch",
             )
+            execution_ref = observed.execution_for(result)
         execution = next(
             record
             for record in publisher.records()
-                if isinstance(record, Execution)
-                and record.computation.id
-                == computation_record(parameterized_report, source=source).id
+            if isinstance(record, Execution) and record.id == execution_ref.id
         )
 
     assert execution.parameters == {"fold_number": 2, "mode": "fast"}
@@ -453,7 +483,6 @@ def fetch_fold_definition() -> dict[str, object]:
 
 
 @computation(
-    id="urn:example:computation:read-fold-definition",
     name="Read fold definition",
     inputs={"fold_definition": JsonArtifact},
 )
@@ -480,7 +509,6 @@ def positive_total(summary: dict[str, int]) -> str:
 
 
 @computation(
-    id="urn:example:computation:aggregate-reports",
     name="Aggregate reports",
     inputs={"reports": many(JsonArtifact)},
     outputs={"summary": JsonArtifact(name="Report summary")},
@@ -507,9 +535,10 @@ def test_json_artifact_adapts_to_a_mapping_when_the_callable_requests_one(
         with OclpRun(
             publisher=publisher,
             source=source,
-        ):
+        ) as observed:
             fold_definition = fetch_fold_definition()
             count = read_fold_definition(fold_definition)
+            execution_ref = observed.execution_for(count)
 
         records = publisher.records()
 
@@ -519,8 +548,7 @@ def test_json_artifact_adapts_to_a_mapping_when_the_callable_requests_one(
         record
         for record in records
         if isinstance(record, Execution)
-        and record.computation.id
-        == computation_record(read_fold_definition, source=source).id
+        and record.id == execution_ref.id
     )
     assert isinstance(record, Execution)
     assert record.inputs == {"fold_definition": (fold_definition.reference,)}
@@ -579,7 +607,6 @@ def test_active_run_binds_many_artifacts_and_evaluates_required_evidence(
 def test_computation_rejects_mixed_raw_and_artifact_input_declarations() -> None:
     with pytest.raises(ValueError, match="either input_ports or inputs"):
         computation(
-            id="urn:example:computation:ambiguous-inputs",
             name="Ambiguous inputs",
             input_ports=(PortDefinition(name="source"),),
             inputs={"source": CsvArtifact},
@@ -589,7 +616,6 @@ def test_computation_rejects_mixed_raw_and_artifact_input_declarations() -> None
 def test_computation_rejects_duplicate_ports_when_declared() -> None:
     with pytest.raises(ValidationError, match="port names must be unique"):
         computation(
-            id="urn:example:computation:invalid",
             name="Invalid computation",
             input_ports=(PortDefinition(name="source"), PortDefinition(name="source")),
         )
@@ -598,7 +624,6 @@ def test_computation_rejects_duplicate_ports_when_declared() -> None:
 def test_computation_requires_a_concrete_persisted_output_representation() -> None:
     with pytest.raises(TypeError, match="concrete Artifact"):
         computation(
-            id="urn:example:computation:implicit-output",
             name="Implicit output",
             outputs=("result",),  # type: ignore[arg-type]
         )
@@ -607,7 +632,6 @@ def test_computation_requires_a_concrete_persisted_output_representation() -> No
 def test_computation_requires_application_owned_output_names() -> None:
     with pytest.raises(ValueError, match="application-supplied ArtifactType names"):
         computation(
-            id="urn:example:computation:unnamed-output",
             name="Produce unnamed output",
             outputs={"result": JsonArtifact()},
         )
@@ -646,7 +670,6 @@ def quality_gate(value: int) -> str:
 
 
 @computation(
-    id="urn:example:computation:quality-checked",
     name="Quality checked",
     requires=(quality_gate,),
 )
@@ -718,7 +741,6 @@ def passing_summary_check(summary: dict[str, int]) -> str:
 
 
 @computation(
-    id="urn:example:computation:collect-evidence",
     name="Collect all Evidence",
     outputs={"summary": JsonArtifact(name="Evidence summary")},
     requires=(broken_summary_check, passing_summary_check),
@@ -772,7 +794,6 @@ class PreparedTable:
 
 
 @computation(
-    id="urn:example:computation:prepare-table",
     name="Prepare table",
     outputs={
         "table": CsvArtifact(
@@ -792,7 +813,6 @@ def prepare_table() -> PreparedTable:
 
 
 @computation(
-    id="urn:example:computation:fetch-table",
     name="Fetch table",
     outputs={"source_snapshot": CsvArtifact(name="Source table")},
 )
@@ -801,7 +821,6 @@ def fetch_table(dataset_id: int = 275) -> CsvTable:
 
 
 @computation(
-    id="urn:example:computation:summarize-table",
     name="Summarize table",
     input_ports=(PortDefinition(name="source", media_types=("text/csv",)),),
     outputs={"summary": JsonArtifact(name="Table summary")},
@@ -830,6 +849,7 @@ def test_active_run_materializes_return_values_and_tracks_exact_input_objects(
             summary = summarize_table(table)
             source_snapshot = observed.artifact_for(table, port="source_snapshot")
             ingest_execution = observed.execution_for(table)
+            summary_execution_ref = observed.execution_for(summary)
 
         records = publisher.records()
 
@@ -845,8 +865,7 @@ def test_active_run_materializes_return_values_and_tracks_exact_input_objects(
     summary_execution = next(
         record
         for record in executions
-        if record.computation.id
-        == computation_record(summarize_table, source=source).id
+        if record.id == summary_execution_ref.id
     )
     assert fetch_execution.parameters == {"dataset_id": 275}
     assert fetch_execution.outputs == {"source_snapshot": (source_snapshot.reference,)}

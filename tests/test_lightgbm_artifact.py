@@ -23,7 +23,6 @@ from oclp.publishing import LocalArtifactPublisher  # noqa: E402
 
 
 @computation(
-    id="urn:example:computation:train-lightgbm",
     name="Train LightGBM",
     outputs={"model": LightGBMModelArtifact(name="Example LightGBM model")},
 )
@@ -39,7 +38,6 @@ def train_lightgbm() -> lightgbm.Booster:
 
 
 @computation(
-    id="urn:example:computation:score-lightgbm",
     name="Score LightGBM",
     inputs={"model": LightGBMModelArtifact},
 )

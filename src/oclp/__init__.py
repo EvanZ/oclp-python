@@ -97,11 +97,11 @@ from oclp.runtime import (
     RunTemplate,
     active_run,
     load_release_manifest,
-    run,
     observe_run,
+    run,
     run_template,
 )
-from oclp.sources import source_from_git_checkout
+from oclp.sources import capture_git_source_overlay, source_from_git_checkout
 from oclp.validation import (
     AcceptanceValidationError,
     DerivationValidationError,
@@ -209,6 +209,7 @@ __all__ = [
     "observe_run",
     "run_template",
     "source_from_git_checkout",
+    "capture_git_source_overlay",
     "toml_artifact",
     "xml_artifact",
     "validate_derivation_graph",

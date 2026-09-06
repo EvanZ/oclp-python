@@ -17,12 +17,10 @@ from typing import (
     get_origin,
     get_type_hints,
 )
-from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, JsonValue, model_validator
 
 from oclp.artifacts import ArtifactType
-from oclp.canonical import canonical_json_bytes
 from oclp.evidence import evidence_implementation
 from oclp.models import (
     Computation,
@@ -32,6 +30,7 @@ from oclp.models import (
     ParameterDefinition,
     PortDefinition,
     ProfileBindings,
+    new_record_id,
 )
 
 CallableT = TypeVar("CallableT", bound=Callable[..., object])
@@ -103,12 +102,12 @@ class ComputationTemplate(OclpModel):
 
     A template intentionally omits ``Implementation.source``. The selected
     Git, Artifact, service, or opaque source basis is a publication-time fact
-    supplied to :func:`computation_record`. Its ``id`` is SDK metadata, already
-    an opaque UUID derived from the decorator's application declaration key;
-    it is not itself an emitted Core Computation record.
+    supplied to :func:`computation_record`. A template is SDK-only metadata;
+    it has no identity separate from its decorated callable. The runtime emits
+    one fresh Core ``Computation`` record for that callable in each observed
+    run.
     """
 
-    id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
@@ -142,12 +141,9 @@ class ComputationTemplate(OclpModel):
 
 def computation(
     *,
-    id: str,
     name: str,
     input_ports: tuple[PortDefinition, ...] = (),
-    inputs: Mapping[
-        str, type[ArtifactType] | ManyArtifacts | ArtifactSetInput
-    ]
+    inputs: Mapping[str, type[ArtifactType] | ManyArtifacts | ArtifactSetInput]
     | None = None,
     output_ports: tuple[PortDefinition, ...] = (),
     outputs: Mapping[str, ArtifactType] | None = None,
@@ -177,7 +173,6 @@ def computation(
     return type.
     """
 
-    opaque_id = _opaque_computation_id(id)
     if input_ports and inputs is not None:
         raise ValueError("declare either input_ports or inputs, not both")
     input_ports, input_artifact_types = _input_artifact_ports(inputs, input_ports)
@@ -197,7 +192,6 @@ def computation(
     # decorator to a callable. Parameter definitions are the only portion of
     # the contract that requires the callable signature itself.
     ComputationTemplate(
-        id=opaque_id,
         name=name,
         input_ports=input_ports,
         output_ports=output_ports,
@@ -214,7 +208,6 @@ def computation(
             raise ValueError("a callable can have only one OCLP Computation template")
         _validate_input_port_parameters(function, input_ports)
         template = ComputationTemplate(
-            id=opaque_id,
             name=name,
             input_ports=input_ports,
             output_ports=output_ports,
@@ -264,19 +257,8 @@ def computation(
     return decorate
 
 
-def _opaque_computation_id(value: str) -> str:
-    """Normalize a UUID or derive opaque SDK template metadata from a key."""
-
-    try:
-        return str(UUID(value))
-    except ValueError:
-        return str(uuid5(NAMESPACE_URL, f"oclp:record-id:{value}"))
-
 def _input_artifact_ports(
-    inputs: Mapping[
-        str, type[ArtifactType] | ManyArtifacts | ArtifactSetInput
-    ]
-    | None,
+    inputs: Mapping[str, type[ArtifactType] | ManyArtifacts | ArtifactSetInput] | None,
     input_ports: tuple[PortDefinition, ...],
 ) -> tuple[
     tuple[PortDefinition, ...],
@@ -543,20 +525,8 @@ def computation_record(
     """Materialize the decorated callable as a source-bound OCLP Computation."""
 
     template = computation_template(function)
-    # The decorator's UUID identifies SDK declaration metadata. A Core
-    # Computation additionally binds an immutable implementation source, so a
-    # different selected commit (or artifact/service source) is a distinct
-    # record with a distinct opaque UUID. The UUID5 is reproducible for the
-    # same declaration+source without exposing a semantic Core identifier.
-    record_id = str(
-        uuid5(
-            NAMESPACE_URL,
-            "oclp:computation-record:"
-            f"{template.id}:{canonical_json_bytes(source).decode('utf-8')}",
-        )
-    )
     return Computation(
-        id=record_id,
+        id=new_record_id(),
         name=template.name,
         profiles=template.profiles,
         annotations=template.annotations,

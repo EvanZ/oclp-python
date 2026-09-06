@@ -39,7 +39,6 @@ pytest.importorskip("tomli_w")
 
 
 @computation(
-    id="urn:example:computation:publish-arrow",
     name="Publish Arrow table",
     outputs={"table": ArrowIpcArtifact(name="Example Arrow table")},
 )
@@ -48,7 +47,6 @@ def publish_arrow() -> object:
 
 
 @computation(
-    id="urn:example:computation:sum-arrow",
     name="Sum Arrow table",
     inputs={"table": ArrowIpcArtifact},
 )
@@ -57,7 +55,6 @@ def sum_arrow(table: pyarrow.Table) -> int:
 
 
 @computation(
-    id="urn:example:computation:publish-npy",
     name="Publish NumPy array",
     outputs={"array": NpyArtifact(name="Example array")},
 )
@@ -66,7 +63,6 @@ def publish_npy() -> numpy.ndarray:
 
 
 @computation(
-    id="urn:example:computation:sum-npy",
     name="Sum NumPy array",
     inputs={"array": NpyArtifact},
 )
@@ -75,7 +71,6 @@ def sum_npy(array: numpy.ndarray) -> float:
 
 
 @computation(
-    id="urn:example:computation:publish-npz",
     name="Publish NumPy archive",
     outputs={"arrays": NpzArtifact(name="Example array archive")},
 )
@@ -87,7 +82,6 @@ def publish_npz() -> dict[str, numpy.ndarray]:
 
 
 @computation(
-    id="urn:example:computation:sum-npz",
     name="Sum NumPy archive",
     inputs={"arrays": NpzArtifact},
 )
@@ -96,7 +90,6 @@ def sum_npz(arrays: dict[str, numpy.ndarray]) -> float:
 
 
 @computation(
-    id="urn:example:computation:publish-configs",
     name="Publish configuration formats",
     outputs={
         "yaml": YamlArtifact(name="Example YAML configuration"),
@@ -109,7 +102,6 @@ def publish_configs() -> dict[str, dict[str, object]]:
 
 
 @computation(
-    id="urn:example:computation:read-yaml",
     name="Read YAML configuration",
     inputs={"config": YamlArtifact},
 )
@@ -118,7 +110,6 @@ def read_yaml(config: dict[str, object]) -> str:
 
 
 @computation(
-    id="urn:example:computation:read-toml",
     name="Read TOML configuration",
     inputs={"config": TomlArtifact},
 )

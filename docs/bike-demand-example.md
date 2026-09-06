@@ -62,9 +62,10 @@ training workflow. The smoke test calls the same decorated prediction callable
 that FastAPI uses; it does not start an HTTP server.
 
 Each reusable computation is declared beside its actual Python callable with
-`@oclp.computation`. At run time the demo adds its observed Git source via
-`computation_record`, so Computation locators are derived from the functions
-rather than copied as hand-maintained strings in the runner.
+`@oclp.computation`. At run time the demo selects its observed Git source with
+`observe_run(...)`; the SDK materializes each callable's Computation record and
+derives its locator from the function rather than copying a hand-maintained
+string into the runner.
 
 ## How this project uses OCLP
 
@@ -120,7 +121,6 @@ multi-output contract:
 
 ```python
 @computation(
-    id="urn:oclp-bike-demand:computation:prepare-features",
     name="Prepare bike demand features",
     inputs={
         "source_snapshot": CsvArtifact,
@@ -173,18 +173,29 @@ part of the bike-demand application or any production run graph.
 
 `runner.py` declares its actual workflow with `@run`, resolves one Git
 source basis for the checkout, and activates it once with
-`observe_run(...)`. Each observed decorated function then materializes
-and publishes its source-bound Computation record itself. The SDK derives
+`observe_run(...)`. The SDK then materializes and publishes one source-bound
+Computation record for each observed decorated callable in that run. The SDK derives
 `implementation.locator` directly from the function—for example,
 `bike_demand_service.data.prepare_features`—and the runner can retrieve the
 resulting reference from the observed result for the optional MLflow bridge.
 
 ```python
 environment = DemoEnvironment.default()
+
+# The publisher is application bootstrap; a dirty checkout gets an exact,
+# durable source overlay before the SDK observes any Computation.
 source = source_from_git_checkout(
     environment.project_root,
     path="examples/bike-demand-service/src/bike_demand_service",
 )
+if isinstance(source, GitSource) and source.dirty:
+    source = capture_git_source_overlay(
+        environment.project_root,
+        source=source,
+        publisher=publisher,
+        name="Bike-demand training source overlay",
+        relative_path=f"source-overlays/{materialization_id}",
+    )
 
 with observe_run(
     run_bike_training,

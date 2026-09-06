@@ -57,12 +57,12 @@ from oclp.models import (
     RecordReference,
     new_record_id,
 )
-from oclp.profiles.run import RUN_PROFILE, RUN_PROFILE_VERSION
 from oclp.profiles.release_manifest import (
     RELEASE_MANIFEST_PROFILE,
     RELEASE_MANIFEST_PROFILE_VERSION,
     ReleaseManifestBinding,
 )
+from oclp.profiles.run import RUN_PROFILE, RUN_PROFILE_VERSION
 from oclp.publishing import LocalArtifactPublisher, PublishedArtifact, utc_now
 
 _ACTIVE_RUN: ContextVar[OclpRun | None] = ContextVar("oclp_active_run", default=None)
@@ -261,6 +261,9 @@ class OclpRun:
     )
     _execution_computations: dict[str, RecordReference] = field(
         default_factory=dict, init=False, repr=False
+    )
+    _computations: dict[Callable[..., object], tuple[Computation, RecordReference]] = (
+        field(default_factory=dict, init=False, repr=False)
     )
 
     def __enter__(self) -> OclpRun:
@@ -498,10 +501,15 @@ class OclpRun:
     ) -> object:
         """Call, materialize, and observe one decorated Computation."""
 
-        computation = computation_record(function, source=self.source)
-        computation_ref = self.publisher.publish(computation)
+        materialized = self._computations.get(function)
+        if materialized is None:
+            computation = computation_record(function, source=self.source)
+            computation_ref = self.publisher.publish(computation)
+            self._computations[function] = (computation, computation_ref)
+        else:
+            computation, computation_ref = materialized
         started_at = utc_now()
-        stage = _stage_name(computation.id)
+        stage = _callable_key(function)
         call_index = self._call_counts.get(computation.id, 0)
         self._call_counts[computation.id] = call_index + 1
         suffix = stage if call_index == 0 else f"{stage}-{call_index + 1}"
@@ -1141,9 +1149,7 @@ def _release_record_references(record: OclpRecord) -> tuple[RecordReference, ...
         if record.parent_execution is not None:
             references.append(record.parent_execution)
         references.extend(
-            reference
-            for bindings in record.inputs.values()
-            for reference in bindings
+            reference for bindings in record.inputs.values() for reference in bindings
         )
         references.extend(
             reference
@@ -1374,13 +1380,6 @@ def _json_value(value: object) -> JsonValue | None:
         return json.loads(json.dumps(value))
     except (TypeError, ValueError):
         return None
-
-
-def _stage_name(computation_id: str) -> str:
-    marker = ":computation:"
-    if marker in computation_id:
-        return computation_id.rsplit(marker, maxsplit=1)[1]
-    return computation_id.rsplit(":", maxsplit=1)[-1]
 
 
 def _callable_key(function: Callable[..., object]) -> str:

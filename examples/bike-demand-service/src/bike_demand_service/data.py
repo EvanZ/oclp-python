@@ -121,7 +121,6 @@ def download_source_artifact(
 
 
 @computation(
-    id="urn:oclp-bike-demand:computation:prepare-features",
     name="Prepare bike demand features",
     inputs={
         "source_snapshot": CsvArtifact,

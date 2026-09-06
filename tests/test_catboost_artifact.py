@@ -18,7 +18,6 @@ from oclp.publishing import LocalArtifactPublisher  # noqa: E402
 
 
 @computation(
-    id="urn:example:computation:train-catboost",
     name="Train CatBoost",
     outputs={"model": CatBoostModelArtifact(name="Example CatBoost model")},
 )
@@ -37,7 +36,6 @@ def train_catboost() -> object:
 
 
 @computation(
-    id="urn:example:computation:score-catboost",
     name="Score CatBoost",
     inputs={"model": CatBoostModelArtifact},
 )

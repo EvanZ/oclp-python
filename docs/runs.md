@@ -58,3 +58,36 @@ inference service that is represented through its service-level projection.
 future persistent lifecycle identifier may associate several UUID-identified
 runs, but it must be explicitly supplied by an application rather than created
 implicitly by the SDK.
+
+## Dirty Git source
+
+`source_from_git_checkout(...)` always preserves a usable Git basis when the
+worktree is dirty by setting `GitSource.dirty` to `true`. When reproducibility
+matters, capture the exact working-tree changes before opening the run:
+
+```python
+from oclp import (
+    GitSource,
+    capture_git_source_overlay,
+    source_from_git_checkout,
+)
+
+source = source_from_git_checkout(project_root, path="src/demand_model")
+if isinstance(source, GitSource) and source.dirty:
+    source = capture_git_source_overlay(
+        project_root,
+        source=source,
+        publisher=publisher,
+        name="Demand-model training source overlay",
+        relative_path="source-overlays/2026-09-05T120000Z",
+    )
+```
+
+The helper publishes a binary `git diff HEAD` as an Artifact and binds its
+ArtifactSet through `GitSource.overlay`. This makes the selected source basis
+`commit + overlay`, rather than merely claiming that it was dirty.
+
+Untracked files require explicit selection because the SDK must not silently
+capture generated files or secrets. If any are present, pass every selected
+path in `untracked_files=("src/local_rules.py",)`; otherwise the helper raises
+instead of recording an incomplete overlay.

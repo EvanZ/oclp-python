@@ -17,6 +17,7 @@ nav = [
     {"DuckDB catalog" = "catalog.md"},
     {"Conformance" = "conformance.md"},
   ]},
+  {"Roadmap" = "roadmap.md"},
 ]
 
 [project.theme]
