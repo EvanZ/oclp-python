@@ -94,6 +94,8 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     body = response.json()
     assert body["model_release_id"] == release.artifact_set.id
     assert isinstance(body["prediction"], float)
+    assert UUID(body["request_id"]).version == 4
+    assert UUID(body["response_id"]).version == 4
     assert UUID(body["execution_id"]).version == 4
 
     with DuckdbCatalog(environment.catalog_path) as catalog:
@@ -107,7 +109,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     assert execution.inputs["model_release"] == (release.reference,)
     assert len(execution.inputs["prediction_request"]) == 1
     response_reference = execution.outputs["prediction_response"][0]
-    assert response_reference.id == body["response_artifact_id"]
+    assert response_reference.id == body["response_id"]
 
     request_artifact = next(
         record
@@ -121,10 +123,12 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
         if isinstance(record, Artifact) and record.id == response_reference.id
     )
     assert json.loads(_read_file_location(request_artifact)) == payload
+    assert request_artifact.id == body["request_id"]
     assert json.loads(_read_file_location(response_artifact)) == {
         "model_release_id": body["model_release_id"],
         "prediction": body["prediction"],
         "request_id": body["request_id"],
+        "response_id": body["response_id"],
     }
     assert request_artifact.schema_uri is None
     assert response_artifact.schema_uri is None

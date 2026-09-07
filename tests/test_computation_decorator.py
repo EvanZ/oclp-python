@@ -15,10 +15,12 @@ from oclp import (
     ArtifactHandle,
     ArtifactSetHandle,
     ArtifactSetInput,
+    ComputationArtifactSet,
     CsvArtifact,
     GitSource,
     JsonArtifact,
     OclpRun,
+    RunArtifactSet,
     active_run,
     artifact_set_input,
     computation,
@@ -81,6 +83,106 @@ def normalize_report_run(source: str) -> str:
 
     assert active_run() is not None
     return normalize_report(source)
+
+
+@computation(
+    name="Publish release configuration",
+    outputs={"configuration": JsonArtifact(name="Release configuration")},
+)
+def declared_release_configuration() -> dict[str, str]:
+    return {"dataset": "hourly-bike-data"}
+
+
+@computation(
+    name="Publish release evaluation",
+    outputs={"evaluation": JsonArtifact(name="Release evaluation")},
+)
+def declared_release_evaluation() -> dict[str, float]:
+    return {"rmse": 0.2}
+
+
+@computation(
+    name="Publish one-computation release",
+    outputs={
+        "configuration": JsonArtifact(name="One-computation configuration"),
+        "evaluation": JsonArtifact(name="One-computation evaluation"),
+    },
+    artifact_set=ComputationArtifactSet(
+        name="One-computation release",
+        port="release",
+        members={
+            "configuration": ("configuration", "config"),
+            "evaluation": ("evaluation", "validation-report"),
+        },
+    ),
+)
+def one_computation_release() -> dict[str, dict[str, object]]:
+    return {
+        "configuration": {"dataset": "hourly-bike-data"},
+        "evaluation": {"rmse": 0.2},
+    }
+
+
+@run(
+    name="Declared release",
+    artifact_sets=(
+        RunArtifactSet(
+            name="Validated release",
+            members={
+                "configuration": (
+                    declared_release_configuration.output("configuration"),
+                    "config",
+                ),
+                "evaluation": (
+                    declared_release_evaluation.output("evaluation"),
+                    "validation-report",
+                ),
+            },
+            materialize_manifest=True,
+            manifest_name="Validated release manifest",
+        ),
+    ),
+)
+def declared_release_run() -> None:
+    declared_release_configuration()
+    declared_release_evaluation()
+
+
+@run(
+    name="Missing declared release member",
+    artifact_sets=(
+        RunArtifactSet(
+            name="Missing release",
+            members={
+                "configuration": (
+                    declared_release_configuration.output("configuration"),
+                    "config",
+                ),
+            },
+        ),
+    ),
+)
+def missing_declared_release_member_run() -> None:
+    return None
+
+
+@run(
+    name="Ambiguous declared release member",
+    artifact_sets=(
+        RunArtifactSet(
+            name="Ambiguous release",
+            members={
+                "configuration": (
+                    declared_release_configuration.output("configuration"),
+                    "config",
+                ),
+            },
+        ),
+    ),
+)
+def ambiguous_declared_release_member_run() -> None:
+    declared_release_configuration()
+    declared_release_configuration()
 
 
 def test_computation_decorator_keeps_callable_behavior_and_derives_locator() -> None:
@@ -190,6 +292,122 @@ def test_observe_run_derives_one_shared_uuid_profile_for_real_executions(
     assert UUID(execution.profiles["run"]["run_id"]).version == 4
     assert execution.profiles["run"]["run_name"] == "Reports"
     assert execution.name == "Normalize report"
+
+
+def test_observe_run_publishes_declared_cross_computation_artifact_set(
+    tmp_path,
+) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            declared_release_run,
+            publisher=publisher,
+            source=source,
+        ) as observed:
+            declared_release_run()
+        release = observed.artifact_set("Validated release")
+        records = publisher.records()
+
+    assert run_template(declared_release_run).artifact_sets[0].name == (
+        "Validated release"
+    )
+    assert [member.name for member in release.artifact_set.members] == [
+        "configuration",
+        "evaluation",
+    ]
+    assert [member.role for member in release.artifact_set.members] == [
+        "config",
+        "validation-report",
+    ]
+    assert release.manifest is not None
+    assert release.manifest.artifact.name == "Validated release manifest"
+    assert not any(
+        isinstance(record, Execution)
+        and record.name in {"Validated release", "Declared release"}
+        for record in records
+    )
+    validate_derivation_graph(records)
+
+
+def test_declared_artifact_set_fails_when_a_required_output_is_missing(
+    tmp_path,
+) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with pytest.raises(ValueError, match="was not materialized"):
+            with observe_run(
+                missing_declared_release_member_run,
+                publisher=publisher,
+                source=source,
+            ):
+                missing_declared_release_member_run()
+
+
+def test_declared_artifact_set_fails_when_an_output_is_ambiguous(tmp_path) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with pytest.raises(ValueError, match="is ambiguous"):
+            with observe_run(
+                ambiguous_declared_release_member_run,
+                publisher=publisher,
+                source=source,
+            ):
+                ambiguous_declared_release_member_run()
+
+
+def test_computation_can_publish_one_artifact_set_output(tmp_path) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with OclpRun(publisher=publisher, source=source) as observed:
+            result = one_computation_release()
+            release = observed.artifact_set_outputs_for(result)["release"]
+            execution_ref = observed.execution_for(result)
+        records = publisher.records()
+
+    execution = next(
+        record
+        for record in records
+        if isinstance(record, Execution) and record.id == execution_ref.id
+    )
+    assert execution.outputs is not None
+    assert execution.outputs["release"] == (release.reference,)
+    assert [member.name for member in release.artifact_set.members] == [
+        "configuration",
+        "evaluation",
+    ]
+    assert not any(
+        isinstance(record, Execution) and record.name == "One-computation release"
+        for record in records
+    )
+    validate_derivation_graph(records)
 
 
 def test_computation_template_requires_decorated_callable() -> None:

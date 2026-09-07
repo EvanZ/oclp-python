@@ -8,6 +8,7 @@ from pathlib import Path
 
 from oclp import (
     OclpRun,
+    RunArtifactSet,
     capture_git_source_overlay,
     load_release_manifest,
     observe_run,
@@ -77,15 +78,6 @@ class DemoRunResult:
 
 
 @dataclass(frozen=True)
-class _ObservedRunResult:
-    """The OCLP-owned outcome returned by the decorated workflow body."""
-
-    model_release: RecordReference
-    model_release_manifest: RecordReference
-    model_release_manifest_path: str
-
-
-@dataclass(frozen=True)
 class _ReleaseSmokeTestResult:
     """Exact records produced by one release-backed inference check."""
 
@@ -95,6 +87,32 @@ class _ReleaseSmokeTestResult:
 
 @run(
     name="Bike demand model training",
+    artifact_sets=(
+        RunArtifactSet(
+            name="Bike demand CatBoost release",
+            members={
+                "model": (train_final_model.output("model"), "model"),
+                "feature-contract": (
+                    prepare_features.output("feature_contract"),
+                    "serving-contract",
+                ),
+                "temporal-evaluation": (
+                    evaluate_folds.output("evaluation"),
+                    "validation-report",
+                ),
+                "training-config": (
+                    evaluate_folds.output("training_config"),
+                    "training-config",
+                ),
+                "feature-table": (
+                    prepare_features.output("features"),
+                    "training-data",
+                ),
+            },
+            materialize_manifest=True,
+            manifest_name="Bike demand release manifest",
+        ),
+    ),
 )
 def run_bike_training(
     *,
@@ -103,7 +121,7 @@ def run_bike_training(
     materialization_id: str,
     fold_count: int,
     temporal_validation_rmse_max: float,
-) -> _ObservedRunResult:
+) -> None:
     """Execute the application's real data and model flow once.
 
     ``@run`` gives every real decorated Computation the same SDK-owned run
@@ -137,7 +155,6 @@ def run_bike_training(
 
     feature_table = prepare_artifacts["features"]
     folds = prepare_artifacts["fold_definition"]
-    feature_contract = prepare_artifacts["feature_contract"]
     with tracker.run("Prepare Features", nested=True):
         tracker.attach_execution(
             execution=prepare_ref,
@@ -210,7 +227,6 @@ def run_bike_training(
         evaluation_ref = observed.execution_for(evaluation_result)
         evaluation_computation = observed.computation_for(evaluation_result)
         quality_evidence = observed.evidence_for(evaluation_result)
-        evaluation_artifact = evaluation_artifacts["evaluation"]
         training_config = evaluation_artifacts["training_config"]
         tracker.attach_execution(
             execution=evaluation_ref,
@@ -264,41 +280,6 @@ def run_bike_training(
             }
         )
 
-    with tracker.run("Publish bike-demand model release", nested=True):
-        model_release = observed.publish_artifact_set(
-            name="Bike demand CatBoost release",
-            members={
-                "model": (final_model_artifact, "model"),
-                "feature-contract": (feature_contract, "serving-contract"),
-                "temporal-evaluation": (
-                    evaluation_artifact,
-                    "validation-report",
-                ),
-                "training-config": (training_config, "training-config"),
-                "feature-table": (feature_table, "training-data"),
-            },
-            materialize_manifest=True,
-            manifest_name="Bike demand release manifest",
-        )
-        assert model_release.manifest is not None
-        tracker.attach_artifact_set(
-            artifact_set=model_release.reference,
-            artifacts={
-                "model": final_model_artifact,
-                "feature-contract": feature_contract,
-                "temporal-evaluation": evaluation_artifact,
-                "training-config": training_config,
-                "feature-table": feature_table,
-                # The SDK-created sidecar identifies this exact ArtifactSet;
-                # it is mirrored beside the release rather than being a set
-                # member (which would make its own digest cyclic).
-                "release-manifest-sidecar": model_release.manifest,
-            },
-        )
-        tracker.log_metrics(
-            {"release_members": len(model_release.artifact_set.members)}
-        )
-
     with tracker.run("Score bike-demand holdout", nested=True):
         score_result = score_holdout(final_model_artifact, feature_table)
         score_artifacts = observed.outputs_for(score_result)
@@ -322,13 +303,6 @@ def run_bike_training(
         )
         tracker.log_metrics(score_result["metrics"])
 
-    return _ObservedRunResult(
-        model_release=model_release.reference,
-        model_release_manifest=model_release.manifest.reference,
-        model_release_manifest_path=str(model_release.manifest.path),
-    )
-
-
 @run(
     name="Release inference smoke test",
 )
@@ -349,13 +323,11 @@ def run_release_smoke_test(
 
     release = load_release_manifest(release_manifest_path)
     request_artifact = persist_prediction_request(
-        request_id=f"{materialization_id}-request",
         payload=_RELEASE_SMOKE_REQUEST,
     )
     result = predict_bike_demand(
         release,
         request_artifact,
-        request_id=f"{materialization_id}-request",
     )
     evidence = observed.evidence_for(result)
     if any(record.outcome != "pass" for record in evidence):
@@ -418,12 +390,28 @@ def run_demo(
             ) as observed:
                 assert observed.run_id is not None
                 training_run_id = str(observed.run_id)
-                training_result = run_bike_training(
+                run_bike_training(
                     observed=observed,
                     tracker=tracker,
                     materialization_id=materialization_id,
                     fold_count=fold_count,
                     temporal_validation_rmse_max=temporal_validation_rmse_max,
+                )
+            model_release = observed.artifact_set("Bike demand CatBoost release")
+            assert model_release.manifest is not None
+            with tracker.run("Publish bike-demand model release", nested=True):
+                tracker.attach_artifact_set(
+                    artifact_set=model_release.reference,
+                    artifacts={
+                        **model_release.members,
+                        # The SDK-created sidecar identifies this exact
+                        # ArtifactSet; it is mirrored beside the release rather
+                        # than being a set member (which would be cyclic).
+                        "release-manifest-sidecar": model_release.manifest,
+                    },
+                )
+                tracker.log_metrics(
+                    {"release_members": len(model_release.artifact_set.members)}
                 )
     release_smoke_materialization_id = f"{materialization_id}-release-smoke"
     with LocalArtifactPublisher(
@@ -440,7 +428,7 @@ def run_demo(
             release_smoke_run_id = str(observed.run_id)
             smoke_result = run_release_smoke_test(
                 observed=observed,
-                release_manifest_path=Path(training_result.model_release_manifest_path),
+                release_manifest_path=model_release.manifest.path,
                 materialization_id=release_smoke_materialization_id,
             )
         records = smoke_publisher.records()
@@ -451,9 +439,9 @@ def run_demo(
     return DemoRunResult(
         materialization_id=materialization_id,
         training_run_id=training_run_id,
-        model_release=training_result.model_release,
-        model_release_manifest=training_result.model_release_manifest,
-        model_release_manifest_path=training_result.model_release_manifest_path,
+        model_release=model_release.reference,
+        model_release_manifest=model_release.manifest.reference,
+        model_release_manifest_path=str(model_release.manifest.path),
         release_smoke_run_id=release_smoke_run_id,
         release_smoke_execution=smoke_result.execution,
         release_smoke_response=smoke_result.response,

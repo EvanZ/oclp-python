@@ -176,8 +176,8 @@ uv run bike-demand serve --release-manifest \
 The health endpoint reports the pinned release ID. `POST /predict` accepts the
 twelve model features (`season`, `yr`, `mnth`, `hr`, `holiday`, `weekday`,
 `workingday`, `weathersit`, `temp`, `atemp`, `hum`, and `windspeed`). Its JSON
-response identifies the request ID, exact release ID, OCLP Execution ID, and
-the durable response Artifact ID. Request and response payloads remain under
+response identifies the exact request Artifact UUID, response Artifact UUID,
+release ID, and OCLP Execution ID. Request and response payloads remain under
 `data/inference/`; their canonical records appear in `data/oclp-0.3/`.
 
 Or start MLflow's local UI against the independent SQLite tracking database:

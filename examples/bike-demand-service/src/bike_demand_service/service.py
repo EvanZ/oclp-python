@@ -16,6 +16,7 @@ without changing the release-to-Execution contract established here.
 
 from __future__ import annotations
 
+import json
 from math import isfinite
 from pathlib import Path
 from typing import Literal
@@ -25,6 +26,7 @@ import pandas as pd
 from catboost import CatBoostRegressor
 from fastapi import FastAPI, HTTPException
 from oclp import (
+    ArtifactHandle,
     ArtifactSetHandle,
     CatBoostModelArtifact,
     GitSource,
@@ -36,6 +38,7 @@ from oclp import (
     evidence,
     json_artifact,
     load_release_manifest,
+    output_artifact_id,
     source_from_git_checkout,
 )
 from oclp.publishing import LocalArtifactPublisher
@@ -68,18 +71,16 @@ class PredictionResponse(BaseModel):
     """HTTP response paired with a durable OCLP response Artifact."""
 
     request_id: str
+    response_id: str
     prediction: float
     model_release_id: str
     execution_id: str
-    response_artifact_id: str
 
 
 @json_artifact(
     name="Bike demand prediction request",
 )
-def persist_prediction_request(
-    *, request_id: str, payload: dict[str, object]
-) -> dict[str, object]:
+def persist_prediction_request(*, payload: dict[str, object]) -> dict[str, object]:
     """Persist the accepted HTTP payload as an external input Artifact."""
 
     return payload
@@ -92,9 +93,12 @@ def prediction_response_validation(
     """Confirm that a produced inference response is safe to return."""
 
     request_id = prediction_response.get("request_id")
+    response_id = prediction_response.get("response_id")
     model_release_id = prediction_response.get("model_release_id")
     prediction = prediction_response.get("prediction")
     if not isinstance(request_id, str) or not request_id:
+        return "fail"
+    if not isinstance(response_id, str) or not response_id:
         return "fail"
     if not isinstance(model_release_id, str) or not model_release_id:
         return "fail"
@@ -123,9 +127,7 @@ def prediction_response_validation(
 )
 def predict_bike_demand(
     model_release: ArtifactSetHandle,
-    prediction_request: dict[str, object],
-    *,
-    request_id: str,
+    prediction_request: ArtifactHandle,
 ) -> dict[str, object]:
     """Score one verified request with the exact released ArtifactSet.
 
@@ -136,16 +138,26 @@ def predict_bike_demand(
     model and feature contract it actually needs.
     """
 
+    try:
+        request_payload = json.loads(prediction_request.read_verified_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("prediction request Artifact must contain JSON") from error
+    if not isinstance(request_payload, dict):
+        raise ValueError("prediction request Artifact must contain a JSON object")
+
     model = model_release.load_member("model", CatBoostRegressor)
     feature_contract = model_release.load_member("feature-contract", dict[str, object])
     feature_columns = _release_feature_columns(feature_contract)
-    frame = pd.DataFrame([prediction_request], columns=feature_columns)
+    frame = pd.DataFrame([request_payload], columns=feature_columns)
     prediction = float(model.predict(model_features(frame))[0])
     if not isfinite(prediction):
         raise ValueError("released model returned a non-finite prediction")
     return {
         "prediction_response": {
-            "request_id": request_id,
+            # This is the UUID of the persisted request Artifact, not an
+            # application-created correlation label.
+            "request_id": prediction_request.artifact.id,
+            "response_id": output_artifact_id("prediction_response"),
             "prediction": prediction,
             "model_release_id": model_release.artifact_set.id,
         }
@@ -188,11 +200,11 @@ def create_app(
     def predict(request: PredictionRequest) -> PredictionResponse:
         """Persist, score, and return one release-pinned prediction request."""
 
-        request_id = uuid4().hex
+        request_storage_key = uuid4().hex
         with LocalArtifactPublisher(
             catalog_path=environment.catalog_path,
             record_root=environment.oclp_root,
-            payload_root=environment.inference_root(request_id),
+            payload_root=environment.inference_root(request_storage_key),
         ) as publisher:
             source = source_from_git_checkout(
                 environment.project_root,
@@ -204,20 +216,18 @@ def create_app(
                     source=source,
                     publisher=publisher,
                     name="Bike-demand service source overlay",
-                    relative_path=f"source-overlays/{request_id}",
+                    relative_path=f"source-overlays/{request_storage_key}",
                 )
             with OclpRun(
                 publisher=publisher,
                 source=source,
             ) as observed:
                 request_artifact = persist_prediction_request(
-                    request_id=request_id,
                     payload=request.model_dump(mode="json"),
                 )
                 result = predict_bike_demand(
                     release,
                     request_artifact,
-                    request_id=request_id,
                 )
                 execution = observed.execution_for(result)
                 response_artifact = observed.outputs_for(result)[
@@ -227,12 +237,17 @@ def create_app(
         response = result["prediction_response"]
         if not isinstance(response, dict):  # pragma: no cover - function contract.
             raise HTTPException(status_code=500, detail="invalid prediction response")
+        if response.get("response_id") != response_artifact.artifact.id:
+            raise HTTPException(
+                status_code=500,
+                detail="prediction response does not identify its Artifact",
+            )
         return PredictionResponse(
             request_id=str(response["request_id"]),
+            response_id=str(response["response_id"]),
             prediction=float(response["prediction"]),
             model_release_id=str(response["model_release_id"]),
             execution_id=execution.id,
-            response_artifact_id=response_artifact.artifact.id,
         )
 
     return app

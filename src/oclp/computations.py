@@ -39,6 +39,91 @@ _COMPUTATION_INPUT_ARTIFACTS_ATTRIBUTE = "__oclp_input_artifact_types__"
 
 
 @dataclass(frozen=True)
+class ComputationOutput:
+    """A static reference to one declared output of a Computation callable.
+
+    This is SDK declaration metadata, not a Core record or an Artifact handle.
+    A run-level ArtifactSet declaration resolves it to the exact Artifact
+    emitted by this callable in one completed observed run.
+    """
+
+    function: Callable[..., object]
+    port: str
+
+
+def computation_output(
+    function: Callable[..., object],
+    port: str,
+) -> ComputationOutput:
+    """Refer to one declared persisted output of a Computation callable."""
+
+    template = computation_template(function)
+    if not isinstance(port, str) or not port:
+        raise ValueError("Computation output ports must be non-empty strings")
+    if port not in template.output_artifacts:
+        available = ", ".join(sorted(template.output_artifacts)) or "none"
+        raise ValueError(
+            f"Computation {template.name!r} has no persisted output port {port!r}; "
+            f"available ports: {available}"
+        )
+    underlying = getattr(function, "__oclp_observed_function__", function)
+    return ComputationOutput(function=underlying, port=port)
+
+
+@dataclass(frozen=True)
+class ComputationArtifactSet:
+    """Declare an ArtifactSet composed from one Computation's output ports.
+
+    The SDK publishes the set after materializing the named member Artifacts
+    and binds the set itself to ``port`` in the real Execution outputs.
+    """
+
+    name: str
+    members: Mapping[str, tuple[str, str | None]]
+    port: str = "artifact_set"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("ArtifactSet names must be non-empty strings")
+        if not isinstance(self.port, str) or not self.port:
+            raise ValueError("ArtifactSet output ports must be non-empty strings")
+        if not self.members:
+            raise ValueError("ArtifactSets require at least one member")
+        normalized_members = dict(self.members)
+        for member_name, declaration in normalized_members.items():
+            if not isinstance(member_name, str) or not member_name:
+                raise ValueError("ArtifactSet member names must be non-empty strings")
+            if not isinstance(declaration, tuple) or len(declaration) != 2:
+                raise TypeError(
+                    "Computation ArtifactSet members must be "
+                    "(output port, optional role) tuples"
+                )
+            output_port, role = declaration
+            if not isinstance(output_port, str) or not output_port:
+                raise ValueError("ArtifactSet member output ports must be non-empty")
+            if role is not None and (not isinstance(role, str) or not role):
+                raise ValueError("ArtifactSet member roles must be non-empty strings")
+        object.__setattr__(self, "members", normalized_members)
+
+    def validate_output_artifacts(
+        self,
+        output_artifacts: Mapping[str, ArtifactType],
+    ) -> None:
+        if self.port in output_artifacts:
+            raise ValueError(
+                f"ArtifactSet output port {self.port!r} conflicts with an "
+                "Artifact output"
+            )
+        for member_name, (output_port, _) in self.members.items():
+            if output_port not in output_artifacts:
+                available = ", ".join(sorted(output_artifacts)) or "none"
+                raise ValueError(
+                    f"ArtifactSet member {member_name!r} refers to output port "
+                    f"{output_port!r}; available Artifact outputs: {available}"
+                )
+
+
+@dataclass(frozen=True)
 class ManyArtifacts:
     """SDK input declaration for a port that consumes many same-kind Artifacts.
 
@@ -116,6 +201,7 @@ class ComputationTemplate(OclpModel):
     output_ports: tuple[PortDefinition, ...] = ()
     parameter_definitions: tuple[ParameterDefinition, ...] = ()
     output_artifacts: dict[str, ArtifactType] = Field(default_factory=dict)
+    artifact_set: ComputationArtifactSet | None = None
     required_evaluators: tuple[Callable[..., object], ...] | None = None
 
     @model_validator(mode="after")
@@ -136,6 +222,8 @@ class ComputationTemplate(OclpModel):
         ]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("required Evidence evaluators must be unique")
+        if self.artifact_set is not None:
+            self.artifact_set.validate_output_artifacts(self.output_artifacts)
         return self
 
 
@@ -147,6 +235,7 @@ def computation(
     | None = None,
     output_ports: tuple[PortDefinition, ...] = (),
     outputs: Mapping[str, ArtifactType] | None = None,
+    artifact_set: ComputationArtifactSet | None = None,
     requires: tuple[Callable[..., object], ...] | None = None,
     profiles: dict[str, dict[str, JsonValue]] | None = None,
     annotations: dict[str, JsonValue] | None = None,
@@ -168,6 +257,12 @@ def computation(
     object (or a key in a returned mapping). A single output persists the
     return value itself.
 
+    ``artifact_set`` optionally groups selected persisted output ports into one
+    additional ArtifactSet output of the same real Execution. Use a
+    :class:`ComputationArtifactSet` when all members come from this callable;
+    use :class:`oclp.runtime.RunArtifactSet` when a release spans several child
+    Computations.
+
     Each output uses an explicit concrete :class:`ArtifactType`, so persistence
     and its durable representation are never inferred merely from a Python
     return type.
@@ -180,6 +275,12 @@ def computation(
     output_artifacts = _output_artifacts(outputs)
     if output_ports and output_artifacts:
         raise ValueError("declare either output_ports or outputs, not both")
+    if artifact_set is not None and not isinstance(
+        artifact_set, ComputationArtifactSet
+    ):
+        raise TypeError("computation artifact_set must be a ComputationArtifactSet")
+    if artifact_set is not None:
+        artifact_set.validate_output_artifacts(output_artifacts)
     if output_artifacts:
         output_ports = tuple(
             PortDefinition(
@@ -188,6 +289,8 @@ def computation(
             )
             for name, spec in output_artifacts.items()
         )
+    if artifact_set is not None:
+        output_ports = (*output_ports, PortDefinition(name=artifact_set.port))
     # Validate the decorator arguments immediately, before Python applies the
     # decorator to a callable. Parameter definitions are the only portion of
     # the contract that requires the callable signature itself.
@@ -196,6 +299,7 @@ def computation(
         input_ports=input_ports,
         output_ports=output_ports,
         output_artifacts=output_artifacts,
+        artifact_set=artifact_set,
         required_evaluators=requires,
         profiles=profiles,
         annotations=annotations or {},
@@ -213,6 +317,7 @@ def computation(
             output_ports=output_ports,
             parameter_definitions=_infer_parameter_definitions(function, input_ports),
             output_artifacts=output_artifacts,
+            artifact_set=artifact_set,
             required_evaluators=requires,
             profiles=profiles,
             annotations=annotations or {},
@@ -251,6 +356,16 @@ def computation(
             observed,
             _COMPUTATION_INPUT_ARTIFACTS_ATTRIBUTE,
             input_artifact_types,
+        )
+        # A run declaration can refer to this callable's persisted outputs
+        # without reaching into runtime handles or naming a synthetic release
+        # function. Keep the underlying callable so OclpRun can match the
+        # declaration to the exact observed invocation(s).
+        setattr(observed, "__oclp_observed_function__", function)
+        setattr(
+            observed,
+            "output",
+            lambda port: computation_output(observed, port),
         )
         return cast(CallableT, observed)
 

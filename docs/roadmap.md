@@ -29,6 +29,19 @@ Track in [#1](https://github.com/EvanZ/oclp-python/issues/1).
 These items implement Core records without making a particular database,
 object store, stream broker, or observability vendor part of the protocol.
 
+### Declarative run-level ArtifactSets — implemented
+
+Let a real `@run` declare an ArtifactSet from exact outputs of its child
+Computations. This should make a cross-computation release boundary visible at
+the run declaration while preserving direct, immutable collection publication:
+no synthetic release Computation, Execution, or Events. It should validate
+that each required declared member resolves once in the completed run, support
+an optional release-manifest sidecar, and retain `OclpRun.publish_artifact_set`
+for genuinely dynamic collections. Distributed contribution coordination is
+out of scope.
+
+Implemented in [#8](https://github.com/EvanZ/oclp-python/issues/8).
+
 ### RecordStore and exporter interfaces
 
 Define small SDK interfaces for an authoritative durable `RecordStore` and

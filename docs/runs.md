@@ -6,18 +6,27 @@ Computations. It does not create a root Execution or synthetic flow edges.
 binding to every real Execution observed inside that context.
 
 ```python
-from oclp import observe_run, run
+from oclp import RunArtifactSet, observe_run, run
 
 
-@run(name="Daily demand model training")
+@run(
+    name="Daily demand model training",
+    artifact_sets=(
+        RunArtifactSet(
+            name="Demand model release",
+            members={
+                "model": (train_model.output("model"), "model"),
+                "features": (prepare_features.output("features"), "training-data"),
+            },
+            materialize_manifest=True,
+            manifest_name="Demand model release manifest",
+        ),
+    ),
+)
 def train_demand_model(*, observed, fold_count: int):
     source = acquire_source_snapshot()
     prepared = prepare_features(source, fold_count=fold_count)
-    model = train_model(observed.outputs_for(prepared)["features"])
-    return observed.publish_artifact_set(
-        name="Demand model release",
-        members={"model": (observed.outputs_for(model)["model"], "model")},
-    )
+    train_model(observed.outputs_for(prepared)["features"])
 ```
 
 At the application bootstrap boundary, select the publisher and the exact
@@ -29,8 +38,22 @@ with observe_run(
     publisher=publisher,
     source=source,
 ) as observed:
-    release = train_demand_model(observed=observed, fold_count=3)
+    train_demand_model(observed=observed, fold_count=3)
+
+release = observed.artifact_set("Demand model release")
 ```
+
+`RunArtifactSet` declarations are resolved only when the `observe_run(...)`
+context completes successfully. Each member references a persisted output port
+on a real `@computation` callable via `.output("port")`; the SDK resolves it
+to the one exact Artifact emitted in that run. A missing member or a callable
+that emitted the referenced port more than once fails clearly rather than
+guessing. The direct collection publication creates no synthetic Computation,
+Execution, or Event.
+
+Use this for a run-local release assembled from child Computations. Keep
+`observed.publish_artifact_set(...)` for genuinely dynamic collections whose
+members cannot be declared before the workflow runs.
 
 Every real Execution receives a binding like:
 

@@ -16,7 +16,7 @@ contracts. OCLP makes its durable observations interoperable.
 | `data.py` | Downloads the UCI source and prepares leakage-safe temporal features. | Declares a CSV Artifact acquisition and the feature-preparation Computation. |
 | `modeling.py` | Declares the training-plan Artifact, trains CatBoost folds and final model, evaluates, and scores holdout data. | Declares reusable model boundaries. |
 | `environment.py` | Resolves local OCLP, MLflow, and payload directories. | Local-only execution environment; not a durable run input. |
-| `runner.py` | Declares and coordinates one model-training run. | Uses SDK `@run` / `observe_run(...)`, passes persisted outputs into training, and directly publishes the final ArtifactSet from exact handles. |
+| `runner.py` | Declares and coordinates one model-training run. | Uses SDK `@run` / `observe_run(...)`, passes persisted outputs into training, and declares the final cross-computation ArtifactSet at the run boundary. |
 | `oclp.publishing` | Writes immutable payload bytes, hashes them, and persists canonical records. | Generic local persistence; no bike-specific policy. |
 | `mlflow.py` | Owns all interaction with local MLflow. | Opens MLflow runs, logs application-selected metrics/parameters, links OCLP references, and mirrors immutable payloads. |
 
@@ -262,15 +262,14 @@ a `tuple[pd.DataFrame, ...]`. It directly returns `evaluation` and
 `training_config`; holdout scoring similarly receives the published CatBoost
 model file and feature CSV through adapters, then returns `predictions` and
 `metrics`. Final-model training likewise receives the feature CSV and its JSON
-training configuration as typed handles. The runner then calls
-`observed.publish_artifact_set(..., materialize_manifest=True,
-manifest_name="Bike demand release manifest")` with the five exact output
-handles. The SDK materializes a separate `release-manifest.json` sidecar from
-those handles and their available upstream OCLP record closure. It carries the
-exact ArtifactSet UUID reference and therefore is not a sixth member:
-including it in the set would create a self-content cycle. This remains direct
-collection publication, not a fake package Computation: it has no locator,
-Execution, or standard execution Events.
+training configuration as typed handles. `@run` declares the five selected
+child outputs as the `Bike demand CatBoost release` ArtifactSet. Once the
+successful run completes, the SDK resolves those exact handles and materializes
+a separate `release-manifest.json` sidecar from their available upstream OCLP
+record closure. It carries the exact ArtifactSet UUID reference and therefore
+is not a sixth member: including it in the set would create a self-content
+cycle. This remains direct collection publication, not a fake package
+Computation: it has no locator, Execution, or standard execution Events.
 
 `training_plan` is an input Artifact rather than a fake workflow output. Its
 decorator persists the configuration as JSON and its exact reference is bound
@@ -314,12 +313,13 @@ training, and holdout scoring and materializes their declared outputs.
 `temporal_validation_quality(evaluation)`, for example, evaluates the
 `"evaluation"` entry. The runtime publishes Evidence before the terminal Event
 and marks the Execution failed when a required evaluator fails.
-Release publication is deliberately outside the automatic Computation path.
-`observed.publish_artifact_set(...)` publishes a named, immutable collection
-from exact handles but does not invent an Execution or standard execution Events. A
-retry that represents a new release receives a new run UUID, which
-creates a distinct ArtifactSet ID, digest, and manifest Artifact. The runner
-supplies the concise manifest name; the SDK does not derive it from the run.
+Release publication is deliberately outside the automatic Computation path but
+is declared on the real `@run` boundary. The SDK resolves the named,
+cross-computation collection from exact handles only after a successful run;
+it does not invent an Execution or standard execution Events. A retry that
+represents a new release receives a new run UUID, which creates a distinct
+ArtifactSet ID, digest, and manifest Artifact. The runner supplies the concise
+manifest name; the SDK does not derive it from the run.
 
 After that collection exists, `run_demo` opens a separate observed run
 for the release inference smoke test. It calls
@@ -340,8 +340,8 @@ configuration.
 The selected model release is an ArtifactSet, not another opaque model file.
 It has named members for the final CatBoost model, feature contract, temporal
 evaluation report, training configuration, and input feature table. The runner
-publishes that ArtifactSet for release consumers directly from the five exact
-Artifact handles, and the SDK writes a `release-manifest.json`
+declares that ArtifactSet from the five exact child output ports for release
+consumers, and the SDK writes a `release-manifest.json`
 sidecar. That sidecar carries the exact ArtifactSet reference, record body, and
 resolved upstream provenance closure without copying model or dataset bytes.
 Its set members remain individually addressable immutable Artifacts. The

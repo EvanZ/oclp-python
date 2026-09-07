@@ -533,7 +533,111 @@ integrations rather than application boilerplate. See [Artifact formats and
 library integrations](integrations.md) for their exact native persistence
 formats and compatibility rules.
 
-### Publish a release ArtifactSet from exact handles
+### Declare an ArtifactSet output from one Computation
+
+When a single Computation materializes several Artifacts that together form
+one package, declare the collection beside its real output ports. The SDK
+materializes the member Artifacts, publishes the ArtifactSet, and records the
+set as an additional output of that same Execution. It does not introduce a
+second, artificial packaging Computation.
+
+```python
+from oclp import ComputationArtifactSet, JsonArtifact, computation
+
+
+@computation(
+    name="Evaluate candidate",
+    outputs={
+        "model": JsonArtifact(name="Candidate model"),
+        "evaluation": JsonArtifact(name="Candidate evaluation"),
+    },
+    artifact_set=ComputationArtifactSet(
+        name="Evaluated candidate",
+        port="candidate_release",
+        members={
+            "model": ("model", "model"),
+            "evaluation": ("evaluation", "validation-report"),
+        },
+    ),
+)
+def evaluate_candidate(...) -> dict[str, object]:
+    return {"model": model, "evaluation": evaluation}
+```
+
+`candidate_release` is an Execution output bound to the exact ArtifactSet.
+Within an active run, retrieve it with
+`observed.artifact_set_outputs_for(result)["candidate_release"]`. Use a
+run-level declaration when the collection instead combines outputs from
+several child Computations.
+
+#### Include an output Artifact's UUID in its own payload
+
+Most payloads do not need to identify their containing Artifact. When an API
+response does, call `output_artifact_id("port")` inside the observed
+Computation. The SDK reserves that UUID before invoking the body and uses it
+when it persists the named output, so the payload and Artifact record agree
+without application code allocating a second identifier.
+
+```python
+from oclp import JsonArtifact, computation, output_artifact_id
+
+
+@computation(
+    name="Respond",
+    outputs={"response": JsonArtifact(name="Response")},
+)
+def respond() -> dict[str, object]:
+    return {"response": {"response_id": output_artifact_id("response")}}
+```
+
+### Declare a run-level release ArtifactSet
+
+Use `RunArtifactSet` on the real `@run` workflow when a release combines
+already-materialized outputs from several child Computations. The declaration
+is resolved at successful `observe_run(...)` completion. No release function,
+Computation, Execution, or Event is fabricated.
+
+```python
+from oclp import RunArtifactSet, observe_run, run
+
+
+@run(
+    name="Candidate training",
+    artifact_sets=(
+        RunArtifactSet(
+            name="Validated candidate model release",
+            members={
+                "model": (train_model.output("model"), "model"),
+                "evaluation": (
+                    evaluate_candidate.output("evaluation"),
+                    "validation-report",
+                ),
+                "features": (prepare_features.output("features"), "training-data"),
+            },
+            materialize_manifest=True,
+            manifest_name="Validated candidate release manifest",
+        ),
+    ),
+)
+def train_candidate(*, observed) -> None:
+    prepared = prepare_features(...)
+    candidate = train_model(...)
+    evaluate_candidate(candidate)
+
+
+with observe_run(train_candidate, publisher=publisher, source=source) as observed:
+    train_candidate(observed=observed)
+
+model_release = observed.artifact_set("Validated candidate model release")
+```
+
+Each dictionary key is the stable ArtifactSet member name. Its value is a
+two-item tuple of a declared `ComputationOutput` and an optional semantic role.
+The SDK requires that every referenced output is materialized exactly once in
+the successful run. It fails when a required member is absent or ambiguous;
+it does not attempt cross-process aggregation or invent a selection policy.
+
+### Publish a dynamic ArtifactSet from exact handles
 
 An ArtifactSet is a Core collection record, not a storage format with bytes to
 serialize and not necessarily the output of a Computation. Publishing a named
@@ -562,10 +666,12 @@ Each dictionary key is the stable ArtifactSet member name. Its value is a
 two-item tuple of an exact `ArtifactHandle` and an optional semantic role:
 `dict[str, tuple[ArtifactHandle, str | None]]`. The SDK publishes an immutable
 ArtifactSet whose members contain those handles' UUID references and
-returns an `ArtifactSetHandle`. A direct ArtifactSet publication does **not**
-copy the Execution-only `run` profile: its relationship to a run is
-derived from the real Artifacts it collects. No member helper, record-ID
-construction, or application-owned publisher call is required.
+returns an `ArtifactSetHandle`. Use this imperative API only when the member
+list is inherently dynamic and cannot be declared on `@computation` or `@run`.
+A direct ArtifactSet publication does **not** copy the Execution-only `run`
+profile: its relationship to a run is derived from the real Artifacts it
+collects. No member helper, record-ID construction, or application-owned
+publisher call is required.
 
 `materialize_manifest=True` asks the SDK to persist a deterministic
 `release-manifest.json` sidecar Artifact. The application must supply its

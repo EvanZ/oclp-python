@@ -32,10 +32,13 @@ from oclp.artifacts import (
 from oclp.canonical import canonical_json_bytes
 from oclp.computations import (
     ArtifactSetInput,
+    ComputationArtifactSet,
+    ComputationOutput,
     ComputationTemplate,
     ManyArtifacts,
     computation_input_artifact_types,
     computation_record,
+    computation_template,
 )
 from oclp.evidence import evaluate_evidence, evidence_template
 from oclp.models import (
@@ -66,8 +69,62 @@ from oclp.profiles.run import RUN_PROFILE, RUN_PROFILE_VERSION
 from oclp.publishing import LocalArtifactPublisher, PublishedArtifact, utc_now
 
 _ACTIVE_RUN: ContextVar[OclpRun | None] = ContextVar("oclp_active_run", default=None)
+_ACTIVE_OUTPUT_ARTIFACT_IDS: ContextVar[Mapping[str, str] | None] = ContextVar(
+    "oclp_active_output_artifact_ids",
+    default=None,
+)
 CallableT = TypeVar("CallableT", bound=Callable[..., object])
 _RUN_TEMPLATE_ATTRIBUTE = "__oclp_run_template__"
+
+
+@dataclass(frozen=True)
+class RunArtifactSet:
+    """Static declaration of one ArtifactSet assembled at run completion.
+
+    Member references identify persisted outputs of child Computation callables.
+    They are resolved only after the real ``@run`` workflow completes
+    successfully, so the published collection contains exact UUID references
+    without adding a synthetic release Computation, Execution, or Event.
+    """
+
+    name: str
+    members: Mapping[str, tuple[ComputationOutput, str | None]]
+    materialize_manifest: bool = False
+    manifest_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("ArtifactSet names must be non-empty strings")
+        if not self.members:
+            raise ValueError("ArtifactSets require at least one member")
+        normalized_members = dict(self.members)
+        for member_name, declaration in normalized_members.items():
+            if not isinstance(member_name, str) or not member_name:
+                raise ValueError("ArtifactSet member names must be non-empty strings")
+            if not isinstance(declaration, tuple) or len(declaration) != 2:
+                raise TypeError(
+                    "run ArtifactSet members must be "
+                    "(ComputationOutput, optional role) tuples"
+                )
+            output, role = declaration
+            if not isinstance(output, ComputationOutput):
+                raise TypeError(
+                    "run ArtifactSet members must refer to Computation outputs"
+                )
+            if role is not None and (not isinstance(role, str) or not role):
+                raise ValueError("ArtifactSet member roles must be non-empty strings")
+        if self.materialize_manifest and (
+            not isinstance(self.manifest_name, str) or not self.manifest_name
+        ):
+            raise ValueError(
+                "materialized ArtifactSets require an application-supplied "
+                "manifest_name"
+            )
+        if not self.materialize_manifest and self.manifest_name is not None:
+            raise ValueError(
+                "manifest_name is only valid when materialize_manifest=True"
+            )
+        object.__setattr__(self, "members", normalized_members)
 
 
 @dataclass(frozen=True)
@@ -81,6 +138,12 @@ class RunTemplate:
     """
 
     name: str
+    artifact_sets: tuple[RunArtifactSet, ...] = ()
+
+    def __post_init__(self) -> None:
+        names = [artifact_set.name for artifact_set in self.artifact_sets]
+        if len(names) != len(set(names)):
+            raise ValueError("run ArtifactSet names must be unique")
 
     def profile_for(self, run_id: UUID) -> ProfileBindings:
         """Return the portable profile binding for one concrete run."""
@@ -97,6 +160,7 @@ class RunTemplate:
 def run(
     *,
     name: str,
+    artifact_sets: tuple[RunArtifactSet, ...] = (),
 ) -> Callable[[CallableT], CallableT]:
     """Declare an application workflow as one observed run boundary.
 
@@ -104,12 +168,18 @@ def run(
     Pair it with :func:`observe_run` at the application bootstrap point to
     configure a publisher and source basis. The SDK generates a UUID for the
     concrete run and derives the shared ``profiles.run`` binding for every real
-    Execution produced by decorated calls inside the workflow.
+    Execution produced by decorated calls inside the workflow. Optional
+    ``artifact_sets`` declare immutable run-level collections assembled from
+    exact child Computation outputs after successful completion.
     """
 
     if not isinstance(name, str) or not name:
         raise ValueError("OCLP run names must be non-empty strings")
-    template = RunTemplate(name=name)
+    if not isinstance(artifact_sets, tuple) or not all(
+        isinstance(artifact_set, RunArtifactSet) for artifact_set in artifact_sets
+    ):
+        raise TypeError("run artifact_sets must be a tuple of RunArtifactSet values")
+    template = RunTemplate(name=name, artifact_sets=artifact_sets)
 
     def decorate(function: CallableT) -> CallableT:
         if not callable(function):
@@ -128,6 +198,32 @@ def run_template(workflow: Callable[..., object]) -> RunTemplate:
         name = getattr(workflow, "__qualname__", repr(workflow))
         raise ValueError(f"workflow {name!r} has no OCLP run declaration")
     return template
+
+
+def output_artifact_id(port: str) -> str:
+    """Return the SDK-reserved UUID for one current Computation output port.
+
+    Most output payloads do not need to mention their own Artifact identity.
+    When one does, this accessor lets the callable embed the exact UUID that
+    the runtime will use while still keeping UUID allocation SDK-owned.
+    """
+
+    if not isinstance(port, str) or not port:
+        raise ValueError("output ports must be non-empty strings")
+    output_ids = _ACTIVE_OUTPUT_ARTIFACT_IDS.get()
+    if output_ids is None:
+        raise RuntimeError(
+            "output_artifact_id() is available only while an observed "
+            "Computation is producing declared outputs"
+        )
+    try:
+        return output_ids[port]
+    except KeyError as error:
+        available = ", ".join(sorted(output_ids)) or "none"
+        raise ValueError(
+            f"the current Computation has no declared Artifact output port {port!r}; "
+            f"available ports: {available}"
+        ) from error
 
 
 @contextmanager
@@ -167,10 +263,16 @@ def observe_run(
         parent_execution=parent_execution,
         profiles=merged_profiles,
         artifact_adapters=artifact_adapters,
+        declared_artifact_sets=template.artifact_sets,
     )
     observed.run_id = concrete_run_id
     with observed:
-        yield observed
+        try:
+            yield observed
+        except BaseException:
+            raise
+        else:
+            observed.publish_declared_artifact_sets()
 
 
 @dataclass(frozen=True)
@@ -247,6 +349,7 @@ class OclpRun:
     parent_execution: RecordReference | None = None
     profiles: ProfileBindings | None = None
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS
+    declared_artifact_sets: tuple[RunArtifactSet, ...] = ()
     run_id: UUID | None = field(default=None, init=False)
     _token: Token[OclpRun | None] | None = field(default=None, init=False, repr=False)
     _value_bindings: dict[int, _ValueBinding] = field(
@@ -254,6 +357,9 @@ class OclpRun:
     )
     _call_counts: dict[str, int] = field(default_factory=dict, init=False, repr=False)
     _execution_outputs: dict[str, dict[str, ArtifactHandle]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _execution_artifact_sets: dict[str, dict[str, ArtifactSetHandle]] = field(
         default_factory=dict, init=False, repr=False
     )
     _execution_bindings: dict[int, _ExecutionBinding] = field(
@@ -265,6 +371,12 @@ class OclpRun:
     _computations: dict[Callable[..., object], tuple[Computation, RecordReference]] = (
         field(default_factory=dict, init=False, repr=False)
     )
+    _function_outputs: dict[
+        Callable[..., object], list[tuple[RecordReference, dict[str, ArtifactHandle]]]
+    ] = field(default_factory=lambda: defaultdict(list), init=False, repr=False)
+    _declared_artifact_sets: dict[str, ArtifactSetHandle] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __enter__(self) -> OclpRun:
         self._token = _ACTIVE_RUN.set(self)
@@ -274,6 +386,59 @@ class OclpRun:
         assert self._token is not None
         _ACTIVE_RUN.reset(self._token)
         self._token = None
+
+    def artifact_set(self, name: str) -> ArtifactSetHandle:
+        """Return one ArtifactSet published from this run's declaration.
+
+        Declared ArtifactSets become available after the surrounding
+        :func:`observe_run` context has completed successfully.
+        """
+
+        try:
+            return self._declared_artifact_sets[name]
+        except KeyError as error:
+            available = ", ".join(sorted(self._declared_artifact_sets)) or "none"
+            raise KeyError(
+                f"this OCLP run has no published declared ArtifactSet {name!r}; "
+                f"available sets: {available}"
+            ) from error
+
+    def publish_declared_artifact_sets(self) -> None:
+        """Resolve and publish the successful run's declared ArtifactSets."""
+
+        if self._declared_artifact_sets:
+            return
+        for declaration in self.declared_artifact_sets:
+            members: dict[str, tuple[ArtifactHandle, str | None]] = {}
+            for member_name, (output, role) in declaration.members.items():
+                observed = self._function_outputs.get(output.function, ())
+                matches = [
+                    (execution, outputs[output.port])
+                    for execution, outputs in observed
+                    if output.port in outputs
+                ]
+                if not matches:
+                    template = computation_template(output.function)
+                    raise ValueError(
+                        f"run ArtifactSet {declaration.name!r} member {member_name!r} "
+                        f"requires output {output.port!r} from Computation "
+                        f"{template.name!r}, but that output was not materialized"
+                    )
+                if len(matches) != 1:
+                    execution_ids = ", ".join(execution.id for execution, _ in matches)
+                    template = computation_template(output.function)
+                    raise ValueError(
+                        f"run ArtifactSet {declaration.name!r} member {member_name!r} "
+                        f"is ambiguous: Computation {template.name!r} emitted output "
+                        f"{output.port!r} {len(matches)} times ({execution_ids})"
+                    )
+                members[member_name] = (matches[0][1], role)
+            self._declared_artifact_sets[declaration.name] = self.publish_artifact_set(
+                name=declaration.name,
+                members=members,
+                materialize_manifest=declaration.materialize_manifest,
+                manifest_name=declaration.manifest_name,
+            )
 
     def artifact_for(
         self, value: object, *, port: str | None = None
@@ -332,6 +497,18 @@ class OclpRun:
         except KeyError as error:
             raise ValueError(
                 "the Execution output bindings are unavailable in this OCLP run"
+            ) from error
+
+    def artifact_set_outputs_for(self, value: object) -> dict[str, ArtifactSetHandle]:
+        """Return declared ArtifactSet outputs from one observed Computation."""
+
+        execution = self.execution_for(value)
+        try:
+            return dict(self._execution_artifact_sets[execution.id])
+        except KeyError as error:
+            raise ValueError(
+                "the Execution has no declared ArtifactSet output bindings "
+                "in this OCLP run"
             ) from error
 
     def publish_artifact_set(
@@ -514,6 +691,9 @@ class OclpRun:
         self._call_counts[computation.id] = call_index + 1
         suffix = stage if call_index == 0 else f"{stage}-{call_index + 1}"
         parameters, inputs = self._bindings_for_call(function, template, args, kwargs)
+        output_artifact_ids = {
+            port: new_record_id() for port in template.output_artifacts
+        }
 
         try:
             invocation_args, invocation_kwargs = self._adapt_artifact_inputs(
@@ -522,7 +702,11 @@ class OclpRun:
                 args,
                 kwargs,
             )
-            result = function(*invocation_args, **invocation_kwargs)
+            output_ids_token = _ACTIVE_OUTPUT_ARTIFACT_IDS.set(output_artifact_ids)
+            try:
+                result = function(*invocation_args, **invocation_kwargs)
+            finally:
+                _ACTIVE_OUTPUT_ARTIFACT_IDS.reset(output_ids_token)
         except BaseException as error:
             execution, execution_ref = self._publish_execution(
                 computation_ref=computation_ref,
@@ -556,11 +740,20 @@ class OclpRun:
                     spec=spec,
                     value=value,
                     suffix=suffix,
+                    artifact_id=output_artifact_ids[port],
                 )
             outputs = {
                 port: (artifact.reference,)
                 for port, artifact in materialized_outputs.items()
             }
+            artifact_set_outputs: dict[str, ArtifactSetHandle] = {}
+            if template.artifact_set is not None:
+                artifact_set = self._publish_computation_artifact_set(
+                    declaration=template.artifact_set,
+                    artifacts=materialized_outputs,
+                )
+                artifact_set_outputs[template.artifact_set.port] = artifact_set
+                outputs[template.artifact_set.port] = (artifact_set.reference,)
         except BaseException as error:
             execution, execution_ref = self._publish_execution(
                 computation_ref=computation_ref,
@@ -611,6 +804,9 @@ class OclpRun:
             for port, artifact in materialized_outputs.items()
         }
         self._execution_outputs[execution_ref.id] = output_handles
+        if artifact_set_outputs:
+            self._execution_artifact_sets[execution_ref.id] = artifact_set_outputs
+        self._function_outputs[function].append((execution_ref, output_handles))
         self._execution_bindings[id(result)] = _ExecutionBinding(
             value=result,
             execution=execution_ref,
@@ -624,6 +820,23 @@ class OclpRun:
                 execution=execution_ref,
             )
         return result
+
+    def _publish_computation_artifact_set(
+        self,
+        *,
+        declaration: ComputationArtifactSet,
+        artifacts: Mapping[str, PublishedArtifact],
+    ) -> ArtifactSetHandle:
+        """Publish one declared collection from this Execution's real outputs."""
+
+        members = {
+            member_name: (
+                ArtifactHandle(published=artifacts[output_port]),
+                role,
+            )
+            for member_name, (output_port, role) in declaration.members.items()
+        }
+        return self.publish_artifact_set(name=declaration.name, members=members)
 
     def _bindings_for_call(
         self,
@@ -768,8 +981,8 @@ class OclpRun:
         spec: ArtifactType,
         value: object,
         suffix: str,
+        artifact_id: str,
     ) -> PublishedArtifact:
-        artifact_id = new_record_id()
         if spec.name is None:  # guarded when @computation is declared.
             raise ValueError(
                 f"Computation output {port!r} requires an application-supplied "
