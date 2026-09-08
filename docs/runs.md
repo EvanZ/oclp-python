@@ -23,10 +23,10 @@ from oclp import RunArtifactSet, observe_run, run
         ),
     ),
 )
-def train_demand_model(*, observed, fold_count: int):
+def train_demand_model(*, fold_count: int):
     source = acquire_source_snapshot()
     prepared = prepare_features(source, fold_count=fold_count)
-    train_model(observed.outputs_for(prepared)["features"])
+    train_model(prepared["features"])
 ```
 
 At the application bootstrap boundary, select the publisher and the exact
@@ -38,7 +38,7 @@ with observe_run(
     publisher=publisher,
     source=source,
 ) as observed:
-    train_demand_model(observed=observed, fold_count=3)
+    train_demand_model(fold_count=3)
 
 release = observed.artifact_set("Demand model release")
 ```
@@ -54,6 +54,13 @@ Execution, or Event.
 Use this for a run-local release assembled from child Computations. Keep
 `observed.publish_artifact_set(...)` for genuinely dynamic collections whose
 members cannot be declared before the workflow runs.
+
+Within one active `OclpRun`, an exact raw value returned from a decorated
+Computation can be supplied directly to another decorated Computation. The SDK
+reuses the already-materialized Artifact binding by object identity and records
+the correct input reference. Pass an `ArtifactHandle` instead only when the
+consumer should reload verified persisted bytes through an adapter, or when
+crossing a process/run boundary.
 
 Every real Execution receives a binding like:
 

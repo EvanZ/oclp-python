@@ -230,8 +230,8 @@ produced it. The SDK writes and binds all three Artifacts; the runner does not
 construct them.
 
 The source DataFrame is similarly persisted by its Artifact-decorated
-acquisition function. The runner only reads resulting references to connect
-later stages:
+acquisition function. Within one active `OclpRun`, the runner passes ordinary
+returned values to its next decorated Computation:
 
 ```python
 with LocalArtifactPublisher(...) as publisher:
@@ -246,30 +246,33 @@ with LocalArtifactPublisher(...) as publisher:
         )
         source_snapshot = download_source_csv()
         prepared = prepare_features(source_snapshot, training_plan)
-        prepare_outputs = observed.outputs_for(prepared)
-        feature_table = prepare_outputs["features"]       # CsvArtifact
-        folds = prepare_outputs["fold_definition"]        # JsonArtifact
-        # The remaining workflow calls run while this same run context is active.
+        feature_table = prepared["features"]
+        folds = prepared["fold_definition"]
+        train_fold(feature_table, folds, fold_number=1)
 ```
 
-Each temporal-fold training call receives `feature_table` and `folds`, not
-`prepared["features"]` or an in-memory fold dictionary. The runtime reloads the CSV
-into the function's `pd.DataFrame` parameter and reloads the JSON fold document
-into its `dict[str, object]` parameter, while the Execution records those two
-exact Artifact references. Candidate evaluation receives
-`many(CsvArtifact)` prediction handles and its ordinary function parameter is
-a `tuple[pd.DataFrame, ...]`. It directly returns `evaluation` and
-`training_config`; holdout scoring similarly receives the published CatBoost
-model file and feature CSV through adapters, then returns `predictions` and
-`metrics`. Final-model training likewise receives the feature CSV and its JSON
-training configuration as typed handles. `@run` declares the five selected
-child outputs as the `Bike demand CatBoost release` ArtifactSet. Once the
-successful run completes, the SDK resolves those exact handles and materializes
-a separate `release-manifest.json` sidecar from their available upstream OCLP
-record closure. It carries the exact ArtifactSet UUID reference and therefore
-is not a sixth member: including it in the set would create a self-content
-cycle. This remains direct collection publication, not a fake package
-Computation: it has no locator, Execution, or standard execution Events.
+The SDK recognizes each exact in-memory output value and reuses its already
+published Artifact binding when it records the next Execution. Thus the call
+above records the `features` and `fold_definition` Artifacts as the exact
+inputs to `train_fold` without the runner extracting handles merely to wire the
+graph. Candidate evaluation likewise receives the raw prediction DataFrames,
+final-model training receives the raw feature table and configuration, and
+holdout scoring receives the raw final model and feature table.
+
+Passing an `ArtifactHandle` remains useful when an application deliberately
+wants a serialization round trip: the SDK verifies the payload bytes and loads
+them through the downstream adapter before calling the function. That is not
+required for same-process lineage. Across processes or runs, object identity
+does not exist, so a handle or a resolved Artifact reference is required.
+
+`@run` declares the five selected child outputs as the `Bike demand CatBoost
+release` ArtifactSet. Once the successful run completes, the SDK resolves those
+exact handles and materializes a separate `release-manifest.json` sidecar from
+their available upstream OCLP record closure. It carries the exact ArtifactSet
+UUID reference and therefore is not a sixth member: including it in the set
+would create a self-content cycle. This remains direct collection publication,
+not a fake package Computation: it has no locator, Execution, or standard
+execution Events.
 
 `training_plan` is an input Artifact rather than a fake workflow output. Its
 decorator persists the configuration as JSON and its exact reference is bound
@@ -280,10 +283,10 @@ to the computation that uses it.
 
 The source snapshot is an external input Artifact; it is not an output of a
 fabricated ingest Execution. Feature preparation is a decorated multi-output
-Computation: the SDK creates its Execution, standard execution Events, and output
-bindings automatically. The runner forwards its exact record references to
-MLflow and mirrors the resulting OCLP payload files into that nested MLflow
-run for convenient experiment inspection.
+Computation: the SDK creates its Execution, standard execution Events, and
+output bindings automatically. The runner asks `observed` for those exact
+references only for the optional MLflow mirror; OCLP dataflow itself already
+uses the raw returned values above.
 
 ```python
 prepare_ref = observed.execution_for(prepared)

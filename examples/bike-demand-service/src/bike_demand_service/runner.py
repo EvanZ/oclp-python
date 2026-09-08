@@ -125,9 +125,11 @@ def run_bike_training(
     """Execute the application's real data and model flow once.
 
     ``@run`` gives every real decorated Computation the same SDK-owned run
-    profile. ``observed`` is used here only to retrieve exact OCLP
-    references for the existing, optional MLflow mirror; it does not publish
-    Executions, Events, or Artifacts itself.
+    profile. The active SDK context carries exact Artifact bindings between
+    decorated calls automatically. ``observed`` is used only to inspect those
+    already-materialized records for the optional MLflow mirror and to inspect
+    required Evidence; it does not publish Executions, Events, or Artifacts
+    itself.
     """
 
     # Acquisition is an Artifact boundary, not a derived Computation. The
@@ -153,8 +155,11 @@ def run_bike_training(
     tracker.log_parameters({"uci_dataset_id": UCI_BIKE_SHARING_DATASET_ID})
     tracker.log_metrics({"source_rows": float(len(prepared["features"]))})
 
-    feature_table = prepare_artifacts["features"]
-    folds = prepare_artifacts["fold_definition"]
+    # Passing exact raw values between decorated calls is sufficient within
+    # this OclpRun: the SDK reuses their materialized Artifact bindings when it
+    # records the next Execution. The handles above are only for MLflow.
+    feature_table = prepared["features"]
+    folds = prepared["fold_definition"]
     with tracker.run("Prepare Features", nested=True):
         tracker.attach_execution(
             execution=prepare_ref,
@@ -205,8 +210,8 @@ def run_bike_training(
                 execution=train_ref,
                 computation=train_computation,
                 inputs={
-                    "feature_table": (feature_table.reference,),
-                    "fold_definition": (folds.reference,),
+                    "feature_table": (observed.artifact_for(feature_table).reference,),
+                    "fold_definition": (observed.artifact_for(folds).reference,),
                 },
                 outputs={
                     "model": (model_artifact.reference,),
@@ -216,7 +221,7 @@ def run_bike_training(
                 artifacts=train_artifacts,
             )
             tracker.log_metrics(result["metrics"])
-        fold_prediction_artifacts.append(predictions)
+        fold_prediction_artifacts.append(result["validation_predictions"])
 
     with tracker.run("Evaluate bike-demand candidate", nested=True):
         evaluation_result = evaluate_folds(
@@ -227,13 +232,14 @@ def run_bike_training(
         evaluation_ref = observed.execution_for(evaluation_result)
         evaluation_computation = observed.computation_for(evaluation_result)
         quality_evidence = observed.evidence_for(evaluation_result)
-        training_config = evaluation_artifacts["training_config"]
+        training_config_value = evaluation_result["training_config"]
         tracker.attach_execution(
             execution=evaluation_ref,
             computation=evaluation_computation,
             inputs={
                 "fold_predictions": tuple(
-                    item.reference for item in fold_prediction_artifacts
+                    observed.artifact_for(item).reference
+                    for item in fold_prediction_artifacts
                 ),
             },
             outputs={
@@ -255,21 +261,23 @@ def run_bike_training(
         )
         final_result = train_final_model(
             feature_table,
-            training_config,
+            training_config_value,
             training_window="all-pre-holdout-rows",
         )
         final_artifacts = observed.outputs_for(final_result)
         final_train_ref = observed.execution_for(final_result)
         final_train_computation = observed.computation_for(final_result)
-        final_model_artifact = final_artifacts["model"]
+        final_model = final_result
         tracker.attach_execution(
             execution=final_train_ref,
             computation=final_train_computation,
             inputs={
-                "feature_table": (feature_table.reference,),
-                "training_config": (training_config.reference,),
+                "feature_table": (observed.artifact_for(feature_table).reference,),
+                "training_config": (
+                    observed.artifact_for(training_config_value).reference,
+                ),
             },
-            outputs={"model": (final_model_artifact.reference,)},
+            outputs={"model": (final_artifacts["model"].reference,)},
             artifacts=final_artifacts,
         )
         tracker.log_metrics(
@@ -281,7 +289,7 @@ def run_bike_training(
         )
 
     with tracker.run("Score bike-demand holdout", nested=True):
-        score_result = score_holdout(final_model_artifact, feature_table)
+        score_result = score_holdout(final_model, feature_table)
         score_artifacts = observed.outputs_for(score_result)
         score_ref = observed.execution_for(score_result)
         score_computation = observed.computation_for(score_result)
@@ -292,8 +300,8 @@ def run_bike_training(
             execution=score_ref,
             computation=score_computation,
             inputs={
-                "model": (final_model_artifact.reference,),
-                "feature_table": (feature_table.reference,),
+                "model": (observed.artifact_for(final_model).reference,),
+                "feature_table": (observed.artifact_for(feature_table).reference,),
             },
             outputs={
                 port: (artifact.reference,)
@@ -302,6 +310,7 @@ def run_bike_training(
             artifacts=score_artifacts,
         )
         tracker.log_metrics(score_result["metrics"])
+
 
 @run(
     name="Release inference smoke test",

@@ -619,14 +619,14 @@ from oclp import RunArtifactSet, observe_run, run
         ),
     ),
 )
-def train_candidate(*, observed) -> None:
+def train_candidate() -> None:
     prepared = prepare_features(...)
     candidate = train_model(...)
     evaluate_candidate(candidate)
 
 
 with observe_run(train_candidate, publisher=publisher, source=source) as observed:
-    train_candidate(observed=observed)
+    train_candidate()
 
 model_release = observed.artifact_set("Validated candidate model release")
 ```

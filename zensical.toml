@@ -12,6 +12,7 @@ nav = [
     {"Instrument a computation" = "instrumenting-computations.md"},
     {"Observe a run" = "runs.md"},
     {"Artifact formats and integrations" = "integrations.md"},
+    {"API reference" = "api-reference.md"},
     {"End-to-end ML example" = "bike-demand-example.md"},
     {"Records and canonicalization" = "records.md"},
     {"DuckDB catalog" = "catalog.md"},
