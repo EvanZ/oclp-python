@@ -8,6 +8,7 @@ from pathlib import Path
 
 from oclp import (
     MlflowAdapter,
+    MlflowMetricOutput,
     OclpRun,
     RunArtifactSet,
     capture_git_source_overlay,
@@ -113,8 +114,24 @@ class _ReleaseSmokeTestResult:
     adapters=(
         MlflowAdapter(
             experiment_name=_MLFLOW_EXPERIMENT_NAME,
+            metric_outputs=(
+                MlflowMetricOutput(
+                    output=train_fold.output("metrics"),
+                    prefix="temporal-fold",
+                    dimensions=("fold_number",),
+                ),
+                MlflowMetricOutput(
+                    output=evaluate_folds.output("evaluation"),
+                    prefix="candidate",
+                ),
+                MlflowMetricOutput(
+                    output=score_holdout.output("metrics"),
+                    prefix="holdout",
+                ),
+            ),
         ),
     ),
+    required_evidence_policy="raise",
 )
 def run_bike_training(
     *,
@@ -127,9 +144,9 @@ def run_bike_training(
 
     ``@run`` gives every real decorated Computation the same SDK-owned run
     profile. The active SDK context carries exact Artifact bindings between
-    decorated calls automatically. ``observed`` is used only to inspect
-    required Evidence; the SDK-owned optional MLflow adapter mirrors records,
-    model payloads, and metrics without application tracking calls.
+    decorated calls automatically. ``observed`` is used only for the optional
+    application-selected MLflow run context; the SDK-owned adapter mirrors
+    records, model payloads, and declared output metrics automatically.
     """
 
     # Acquisition is an Artifact boundary, not a derived Computation. The
@@ -167,23 +184,13 @@ def run_bike_training(
             folds,
             fold_number=fold_number,
         )
-        mlflow.log_metrics(
-            {
-                f"fold-{fold_number}.{name}": value
-                for name, value in result["metrics"].items()
-            }
-        )
         fold_prediction_artifacts.append(result["validation_predictions"])
 
     evaluation_result = evaluate_folds(
         tuple(fold_prediction_artifacts),
         temporal_validation_rmse_max=temporal_validation_rmse_max,
     )
-    quality_evidence = observed.evidence_for(evaluation_result)
     training_config_value = evaluation_result["training_config"]
-    mlflow.log_metrics(evaluation_result["evaluation"])
-    if any(item.outcome != "pass" for item in quality_evidence):
-        raise RuntimeError("bike-demand temporal quality gate failed")
 
     final_model = train_final_model(
         feature_table,
@@ -198,15 +205,12 @@ def run_bike_training(
         }
     )
 
-    score_result = score_holdout(final_model, feature_table)
-    mlflow.log_metrics(score_result["metrics"])
-    holdout_evidence = observed.evidence_for(score_result)
-    if any(item.outcome != "pass" for item in holdout_evidence):
-        raise RuntimeError("bike-demand holdout response contract failed")
+    score_holdout(final_model, feature_table)
 
 
 @run(
     name="Release inference smoke test",
+    required_evidence_policy="raise",
 )
 def run_release_smoke_test(
     *,
@@ -231,9 +235,6 @@ def run_release_smoke_test(
         release,
         request_artifact,
     )
-    evidence = observed.evidence_for(result)
-    if any(record.outcome != "pass" for record in evidence):
-        raise RuntimeError("release inference smoke test failed")
     return _ReleaseSmokeTestResult(
         execution=observed.execution_for(result),
         response=observed.outputs_for(result)["prediction_response"].reference,

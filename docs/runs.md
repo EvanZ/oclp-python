@@ -49,6 +49,44 @@ When the destination is bootstrap configuration rather than a static workflow
 choice, pass `adapters=(...)` to `observe_run(...)` instead. Adapters are
 optional integration mirrors; OCLP publication remains authoritative.
 
+## Integration adapters
+
+Adapters are optional SDK extensions that observe records after the runtime has
+published them. They can mirror those records to an external system, but do not
+define OCLP dataflow, create Core records, or become an authority for
+provenance. Declare stable workflow integrations on `@run`:
+
+```python
+@run(
+    name="Daily demand model training",
+    adapters=(MlflowAdapter(experiment_name="daily-training"),),
+)
+def train_demand_model(...): ...
+```
+
+The declaration is a template. When `observe_run(...)` begins, the runtime
+creates a fresh active adapter instance for that one observation (by calling
+`for_run()` when the adapter provides it). This prevents connection and session
+state from leaking across runs.
+
+Inside the active context, retrieve one configured adapter by its *class*, not
+by a variable captured from the declaration:
+
+```python
+with observe_run(train_demand_model, publisher=publisher, source=source) as observed:
+    train_demand_model(...)
+
+    mlflow = observed.adapter(MlflowAdapter)
+    mlflow.log_metrics({"validation_rmse": 42.1})
+```
+
+`observed.adapter(MlflowAdapter)` returns the active per-run `MlflowAdapter`
+instance—the runtime selects it with the equivalent of
+`isinstance(adapter, MlflowAdapter)`. It requires exactly one matching
+adapter: zero or multiple matches raise a clear error rather than silently
+choosing one. Use this escape hatch only for application-selected integration
+context. Automatic OCLP record and payload mirroring stays inside the adapter.
+
 `RunArtifactSet` declarations are resolved only when the `observe_run(...)`
 context completes successfully. Each member references a persisted output port
 on a real `@computation` callable via `.output("port")`; the SDK resolves it
@@ -60,6 +98,70 @@ Execution, or Event.
 Use this for a run-local release assembled from child Computations. Keep
 `observed.publish_artifact_set(...)` for genuinely dynamic collections whose
 members cannot be declared before the workflow runs.
+
+### Required Evidence policy
+
+Required Evidence always determines the terminal status of its own Execution.
+By default, a failed gate does **not** control the surrounding workflow: its
+outputs, Evidence, and failed terminal Event are published, then the workflow
+may deliberately inspect the result and continue along an independent branch.
+
+When a run should stop before downstream code can consume a rejected result,
+declare that policy once on the workflow:
+
+```python
+@run(
+    name="Daily demand model training",
+    required_evidence_policy="raise",
+)
+def train_demand_model(...): ...
+```
+
+After the SDK has materialized the outputs, evaluated every required evaluator,
+and published the failed terminal Execution, it raises
+`RequiredEvidenceFailedError`. The exception exposes the exact Execution
+reference and the complete tuple of Evidence outcomes. This is SDK workflow
+control flow, not a new Core record or a replacement for Evidence.
+
+### MLflow metric outputs
+
+`MlflowAdapter` can project numeric fields from explicitly selected JSON
+Computation outputs. This avoids application calls to `log_metrics()` for
+ordinary model-comparison outputs while keeping the selection in the MLflow
+integration declaration:
+
+```python
+from oclp import MlflowAdapter, MlflowMetricOutput
+
+@run(
+    name="Daily demand model training",
+    adapters=(
+        MlflowAdapter(
+            experiment_name="daily-training",
+            metric_outputs=(
+                MlflowMetricOutput(
+                    output=evaluate_candidate.output("metrics"),
+                    prefix="candidate",
+                ),
+                MlflowMetricOutput(
+                    output=train_fold.output("metrics"),
+                    prefix="fold",
+                    dimensions=("fold_number",),
+                ),
+            ),
+        ),
+    ),
+)
+def train_demand_model(...): ...
+```
+
+Each declaration targets one exact decorated output, rather than guessing from
+an output named `"metrics"`. The adapter reads the verified persisted JSON
+Artifact and exports only top-level numeric scalar fields. `dimensions` add
+declared scalar Execution parameters to the MLflow key—for example,
+`fold.fold_number-2.rmse`. Repeated selected calls without distinct dimensions
+are rejected rather than silently colliding. No output is selected by default,
+and this remains an MLflow projection rather than a Core OCLP `Metric` type.
 
 Within one active `OclpRun`, an exact raw value returned from a decorated
 Computation can be supplied directly to another decorated Computation. The SDK

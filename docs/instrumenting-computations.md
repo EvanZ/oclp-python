@@ -443,6 +443,14 @@ loads a verified Artifact into a later `CatBoostRegressor` parameter. For more
 than one direct output, each port is a key in the returned mapping. There is no
 separate `attribute=` selector to keep in sync.
 
+Static `annotations` describe every Artifact from a declaration. When an
+annotation belongs to one particular call, such as a temporal fold number, an
+output `annotation_factory` can declare the Computation parameters it needs by
+name. The SDK passes those exact call values and stores the returned
+JSON-compatible fields on that one Artifact record. The factory can return
+several annotations and its values override static annotations with the same
+keys.
+
 ```python
 @computation(
     name="Prepare report",

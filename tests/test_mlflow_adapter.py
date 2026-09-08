@@ -14,6 +14,7 @@ from oclp import (
     GitSource,
     JsonArtifact,
     MlflowAdapter,
+    MlflowMetricOutput,
     MlflowModelRegistration,
     RunArtifactSet,
     computation,
@@ -43,6 +44,22 @@ def train_adapter_test_model(*, depth: int) -> bytes:
 )
 def computation_with_adapter_failure() -> dict[str, bool]:
     return {"ok": True}
+
+
+@computation(
+    name="Publish fold metrics",
+    outputs={"metrics": JsonArtifact(name="Fold metrics")},
+)
+def publish_fold_metrics(*, fold_number: int) -> dict[str, object]:
+    return {
+        "metrics": {
+            "rmse": float(fold_number),
+            "rows": fold_number * 10,
+            "label": "not-a-metric",
+            "nested": {"ignored": True},
+            "passed": True,
+        }
+    }
 
 
 class _FakeMlflowClient:
@@ -76,6 +93,7 @@ class _FakeMlflow:
         self.records: dict[str, object] = {}
         self.parameters: dict[str, str] = {}
         self.metrics: dict[str, float] = {}
+        self.run_names: list[str | None] = []
         self.artifacts: list[tuple[str, str | None]] = []
         self.end_statuses: list[str] = []
 
@@ -86,7 +104,7 @@ class _FakeMlflow:
         self.experiment_name = name
 
     def start_run(self, *, run_name: str | None) -> SimpleNamespace:
-        assert run_name == "MLflow adapter workflow"
+        self.run_names.append(run_name)
         return SimpleNamespace(info=SimpleNamespace(run_id="mlflow-run-id"))
 
     def set_tags(self, values: dict[str, str]) -> None:
@@ -187,11 +205,194 @@ def test_mlflow_adapter_mirrors_records_models_and_explicit_registration(
     assert any(path.startswith("oclp/records/execution/") for path in mlflow.records)
     assert any(path.startswith("oclp/records/computation/") for path in mlflow.records)
     assert any(path.startswith("oclp/records/artifact_set/") for path in mlflow.records)
-    assert mlflow.parameters["Train-adapter-test-model.depth"] == "6"
+    assert len(mlflow.parameters) == 1
+    parameter_name, parameter_value = next(iter(mlflow.parameters.items()))
+    assert parameter_name.startswith("Train-adapter-test-model.")
+    assert parameter_name.endswith(".depth")
+    assert parameter_value == "6"
     assert len(mlflow.artifacts) == 1
     assert client.registered_models == ["oclp-test-model"]
     assert client.model_versions[0]["run_id"] == "mlflow-run-id"
+    assert mlflow.run_names == ["MLflow adapter workflow"]
     assert mlflow.end_statuses == ["FINISHED"]
+
+
+def test_mlflow_adapter_scopes_same_named_payloads_by_artifact_id(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    """Repeated folds must not overwrite a same-named model in MLflow."""
+
+    mlflow, _client = fake_mlflow
+    adapter = MlflowAdapter(experiment_name="oclp-tests")
+
+    @run(name="Repeated model payloads", adapters=(adapter,))
+    def workflow() -> None:
+        train_adapter_test_model(depth=4)
+        train_adapter_test_model(depth=6)
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+        ):
+            workflow()
+
+    destinations = [destination for _path, destination in mlflow.artifacts]
+    assert len(destinations) == 2
+    assert len(set(destinations)) == 2
+    assert all(
+        destination is not None
+        and destination.startswith("oclp/payloads/Test-CatBoost-model/")
+        for destination in destinations
+    )
+
+
+def test_mlflow_adapter_extracts_selected_json_output_metrics(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow, _client = fake_mlflow
+    adapter = MlflowAdapter(
+        experiment_name="oclp-tests",
+        tracking_uri="sqlite:///test.db",
+        metric_outputs=(
+            MlflowMetricOutput(
+                output=publish_fold_metrics.output("metrics"),
+                prefix="fold",
+                dimensions=("fold_number",),
+            ),
+        ),
+    )
+
+    @run(name="MLflow metrics workflow", adapters=(adapter,))
+    def workflow() -> None:
+        publish_fold_metrics(fold_number=1)
+        publish_fold_metrics(fold_number=2)
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+        ):
+            workflow()
+
+    assert mlflow.metrics == {
+        "fold.fold_number-1.rmse": 1.0,
+        "fold.fold_number-1.rows": 10.0,
+        "fold.fold_number-2.rmse": 2.0,
+        "fold.fold_number-2.rows": 20.0,
+    }
+    assert sorted(mlflow.parameters.values()) == ["1", "2"]
+    assert mlflow.end_statuses == ["FINISHED"]
+
+
+def test_mlflow_metric_output_collision_is_diagnostic_unless_strict(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow, _client = fake_mlflow
+    adapter = MlflowAdapter(
+        experiment_name="oclp-tests",
+        tracking_uri="sqlite:///test.db",
+        metric_outputs=(
+            MlflowMetricOutput(
+                output=publish_fold_metrics.output("metrics"),
+                prefix="fold",
+            ),
+        ),
+    )
+
+    @run(name="Non-strict MLflow collision workflow", adapters=(adapter,))
+    def workflow() -> None:
+        publish_fold_metrics(fold_number=1)
+        publish_fold_metrics(fold_number=2)
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+        ):
+            workflow()
+        records = publisher.records()
+
+    assert mlflow.metrics == {"fold.rmse": 1.0, "fold.rows": 10.0}
+    diagnostics = [
+        record
+        for record in records
+        if isinstance(record, Event) and record.event_type == "adapter-failed"
+    ]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].diagnostic is not None
+    assert "would collide" in diagnostics[0].diagnostic.message
+
+
+def test_strict_mlflow_metric_output_collision_fails_the_workflow(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow, _client = fake_mlflow
+    adapter = MlflowAdapter(
+        experiment_name="oclp-tests",
+        tracking_uri="sqlite:///test.db",
+        strict=True,
+        metric_outputs=(
+            MlflowMetricOutput(
+                output=publish_fold_metrics.output("metrics"),
+                prefix="fold",
+            ),
+        ),
+    )
+
+    @run(name="Strict MLflow collision workflow", adapters=(adapter,))
+    def workflow() -> None:
+        publish_fold_metrics(fold_number=1)
+        publish_fold_metrics(fold_number=2)
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with pytest.raises(ValueError, match="would collide"):
+            with observe_run(
+                workflow,
+                publisher=publisher,
+                source=GitSource(
+                    repository="https://github.com/example/adapter-test.git",
+                    commit="a" * 40,
+                ),
+            ):
+                workflow()
+        records = publisher.records()
+
+    assert mlflow.end_statuses == ["FAILED"]
+    assert sum(isinstance(record, Event) for record in records) >= 6
+
+
+def test_mlflow_metric_output_requires_declared_json_output() -> None:
+    with pytest.raises(ValueError, match="application/json"):
+        MlflowMetricOutput(output=train_adapter_test_model.output("model"))
 
 
 def test_non_strict_adapter_failure_becomes_an_oclp_diagnostic_event(

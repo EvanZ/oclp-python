@@ -50,6 +50,12 @@ class ComputationOutput:
     function: Callable[..., object]
     port: str
 
+    @property
+    def locator(self) -> str:
+        """Return the stable callable locator for this declared output."""
+
+        return _callable_locator(self.function)
+
 
 def computation_output(
     function: Callable[..., object],

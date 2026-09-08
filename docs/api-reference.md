@@ -69,6 +69,46 @@ Input classes validate an Artifact media type. Output instances additionally
 carry a required application `name` and may contain `annotations`,
 `schema_uri`, and serialization options.
 
+For output metadata that depends on one call's ordinary parameters, provide an
+`annotation_factory`. It declares the parameters it needs by name; the SDK
+matches those names to the decorated Computation call and passes their actual
+values when it materializes that output. The factory returns JSON-compatible
+annotations for that one immutable Artifact record. It need not declare every
+Computation argument. Static `annotations` remain in place and the factory's
+values are added to them; a factory value wins if both maps use the same key:
+
+```python
+def fold_annotations(*, fold_number: int) -> dict[str, int | str]:
+    return {
+        "fold_number": fold_number,
+        "split_strategy": "temporal",
+    }
+
+
+@computation(
+    name="Train temporal fold",
+    outputs={
+        "model": CatBoostModelArtifact(
+            name="Temporal fold model",
+            annotations={"model_family": "catboost"},
+            annotation_factory=fold_annotations,
+        ),
+    },
+)
+def train_fold(*, fold_number: int): ...
+```
+
+For `train_fold(fold_number=2)`, the SDK calls
+`fold_annotations(fold_number=2)` and persists this model Artifact metadata:
+
+```json
+{
+  "model_family": "catboost",
+  "fold_number": 2,
+  "split_strategy": "temporal"
+}
+```
+
 `outputs` determines how a callable result becomes persisted output ports. With
 **one** declared output, the entire return value is materialized at that port.
 The returned `{"rows": ...}` in this example therefore becomes the JSON
@@ -250,7 +290,12 @@ with a Diagnostic rather than disappearing as logs.
 ### `@run(...)` and `observe_run(...)`
 
 ```python
-@run(name="Daily training", artifact_sets=(), adapters=())
+@run(
+    name="Daily training",
+    artifact_sets=(),
+    adapters=(),
+    required_evidence_policy="continue",
+)
 def train(*, observed): ...
 
 
@@ -266,6 +311,31 @@ applies the same `profiles.run` binding to the real child Executions. Supply
 by `@run`. `adapters` holds optional SDK integration objects. It can also be
 supplied to `observe_run(...)` for bootstrap-time configuration.
 
+Set `required_evidence_policy="raise"` when a workflow must stop after a real
+Execution publishes failed required Evidence. The default, `"continue"`,
+preserves the failed Execution and leaves application control flow unchanged.
+With `"raise"`, the runtime raises `RequiredEvidenceFailedError` only *after*
+outputs, every Evidence record, and the failed terminal Event have been
+published. Its `execution` and `evidence` attributes identify those records.
+
+An adapter declared on `@run` is a reusable configuration template, not its
+active per-run session. The runtime calls an adapter's optional `for_run()`
+method to obtain a fresh active instance for each observation. Access that
+active instance from an `OclpRun` by its class:
+
+```python
+with observe_run(workflow, publisher=publisher, source=source) as observed:
+    workflow()
+    mlflow = observed.adapter(MlflowAdapter)
+    mlflow.log_metrics({"validation_rmse": 42.1})
+```
+
+`OclpRun.adapter(AdapterClass)` returns the exactly one active adapter that is
+an instance of `AdapterClass`. It raises when no adapter or more than one
+adapter matches; this makes an ambiguous integration configuration visible.
+The returned object is useful for application-selected external context only;
+the adapter itself automatically mirrors OCLP records.
+
 ### `MlflowAdapter` (optional)
 
 Install the optional extra first:
@@ -277,7 +347,7 @@ pip install 'oclp[mlflow]'
 Then attach one adapter to an observed run:
 
 ```python
-from oclp import MlflowAdapter, observe_run, run
+from oclp import MlflowAdapter, MlflowMetricOutput, observe_run, run
 
 @run(
     name="Daily training",
@@ -302,17 +372,49 @@ publisher default is a SQLite MLflow store and artifact directory beside the
 OCLP record directory.
 
 The adapter mirrors canonical OCLP record JSON, UUID tags, typed Execution
-parameters, and top-level numeric Evidence details. It mirrors model payloads
-by default; `payload_artifacts` opts additional named payloads in. OCLP is
-always authoritative: the adapter never reads MLflow to create, validate, or
-query OCLP provenance.
+parameters, and top-level numeric Evidence details. Execution parameter keys
+include their OCLP Execution UUID because MLflow parameters are immutable
+within one MLflow run while a Computation may run repeatedly with different
+arguments. It mirrors model payloads by default; `payload_artifacts` opts
+additional named payloads in. OCLP is always authoritative: the adapter never
+reads MLflow to create, validate, or query OCLP provenance.
+Each mirrored payload is stored beneath its OCLP Artifact UUID, so repeated
+same-named outputs (for example, temporal-fold models) remain distinct in the
+MLflow artifact store.
 
-An application can deliberately add domain-specific comparison values without
-recreating OCLP reference wiring:
+For selected JSON output Artifacts, add `MlflowMetricOutput` declarations:
 
 ```python
-adapter.log_metrics({"validation_rmse": 42.1})
-adapter.log_parameters({"candidate_family": "CatBoostRegressor"})
+adapter = MlflowAdapter(
+    experiment_name="daily-training",
+    metric_outputs=(
+        MlflowMetricOutput(
+            output=evaluate_model.output("metrics"),
+            prefix="validation",
+        ),
+        MlflowMetricOutput(
+            output=train_fold.output("metrics"),
+            prefix="fold",
+            dimensions=("fold_number",),
+        ),
+    ),
+)
+```
+
+The selected output must be an `application/json` Artifact. The adapter reads
+its verified bytes and logs only top-level numeric scalar fields. `dimensions`
+must name declared scalar Execution parameters and prevent repeated invocations
+from producing the same MLflow key. An attempted collision is an adapter
+failure: it follows the normal Diagnostic behavior unless `strict=True`.
+
+After the adapter is declared, an application can retrieve its active session
+with `observed.adapter(MlflowAdapter)` and deliberately add domain-specific
+comparison values without recreating OCLP reference wiring:
+
+```python
+mlflow = observed.adapter(MlflowAdapter)
+mlflow.log_metrics({"validation_rmse": 42.1})
+mlflow.log_parameters({"candidate_family": "CatBoostRegressor"})
 ```
 
 Use this only for values whose MLflow presentation is an application decision;

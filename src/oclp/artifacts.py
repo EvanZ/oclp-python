@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 Parameters = ParamSpec("Parameters")
 _ARTIFACT_TYPE_ATTRIBUTE = "__oclp_artifact_type__"
+ArtifactAnnotationFactory = Callable[..., Mapping[str, JsonValue]]
 
 
 class ArtifactAdapterError(ValueError):
@@ -528,6 +529,10 @@ class ArtifactType(OclpModel, ABC):
     path: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
+    annotation_factory: ArtifactAnnotationFactory | None = Field(
+        default=None,
+        exclude=True,
+    )
     schema_uri: str | None = Field(default=None, min_length=1)
     media_types: ClassVar[tuple[str, ...]] = ()
 

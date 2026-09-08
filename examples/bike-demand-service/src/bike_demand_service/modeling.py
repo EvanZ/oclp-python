@@ -29,6 +29,12 @@ from bike_demand_service.data import (
 )
 
 
+def _temporal_fold_model_annotations(*, fold_number: int) -> dict[str, int]:
+    """Keep the model's temporal-fold identity with its Artifact record."""
+
+    return {"fold_number": fold_number}
+
+
 @evidence(
     name="Temporal validation quality",
 )
@@ -92,6 +98,7 @@ def create_training_plan(
     outputs={
         "model": CatBoostModelArtifact(
             name="Temporal fold model",
+            annotation_factory=_temporal_fold_model_annotations,
         ),
         "validation_predictions": CsvArtifact(
             name="Validation predictions",

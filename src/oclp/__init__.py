@@ -77,7 +77,7 @@ from oclp.evidence import (
     evidence_implementation,
     evidence_template,
 )
-from oclp.mlflow import MlflowAdapter, MlflowModelRegistration
+from oclp.mlflow import MlflowAdapter, MlflowMetricOutput, MlflowModelRegistration
 from oclp.models import (
     Artifact,
     ArtifactSet,
@@ -98,6 +98,7 @@ from oclp.models import (
 from oclp.runtime import (
     ArtifactSetHandle,
     OclpRun,
+    RequiredEvidenceFailedError,
     RunAdapter,
     RunArtifactSet,
     RunTemplate,
@@ -153,6 +154,7 @@ __all__ = [
     "LightGBMModelAdapter",
     "LightGBMModelArtifact",
     "MlflowAdapter",
+    "MlflowMetricOutput",
     "MlflowModelRegistration",
     "NpyArrayAdapter",
     "NpyArtifact",
@@ -175,6 +177,7 @@ __all__ = [
     "ParameterValidationError",
     "OpaqueSource",
     "OclpRun",
+    "RequiredEvidenceFailedError",
     "RunArtifactSet",
     "RunAdapter",
     "RunTemplate",

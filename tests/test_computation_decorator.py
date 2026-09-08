@@ -15,11 +15,13 @@ from oclp import (
     ArtifactHandle,
     ArtifactSetHandle,
     ArtifactSetInput,
+    BytesArtifact,
     ComputationArtifactSet,
     CsvArtifact,
     GitSource,
     JsonArtifact,
     OclpRun,
+    RequiredEvidenceFailedError,
     RunArtifactSet,
     active_run,
     artifact_set_input,
@@ -894,6 +896,23 @@ def quality_gate(value: int) -> str:
 def quality_checked() -> None: ...
 
 
+@computation(
+    name="Publish gated value",
+    outputs={"value": JsonArtifact(name="Gated value")},
+    requires=(quality_gate,),
+)
+def publish_gated_value(*, value: int) -> dict[str, int]:
+    return {"value": value}
+
+
+@computation(
+    name="Downstream after gate",
+    outputs={"result": JsonArtifact(name="Downstream result")},
+)
+def downstream_after_gate() -> dict[str, bool]:
+    return {"result": {"ran": True}}
+
+
 def test_computation_decorator_materializes_required_evidence() -> None:
     template = computation_template(quality_checked)
     source = GitSource(
@@ -994,6 +1013,94 @@ def test_runtime_collects_all_required_evidence_when_a_gate_errors(tmp_path) -> 
     assert terminal.status == "failed"
 
 
+def test_run_can_raise_after_publishing_failed_required_evidence(tmp_path) -> None:
+    @run(name="Fail fast evidence run", required_evidence_policy="raise")
+    def workflow() -> None:
+        publish_gated_value(value=0)
+        downstream_after_gate()
+
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with pytest.raises(RequiredEvidenceFailedError) as raised:
+            with observe_run(workflow, publisher=publisher, source=source):
+                workflow()
+        records = publisher.records()
+
+    error = raised.value
+    assert [record.outcome for record in error.evidence] == ["fail"]
+    gated_execution = next(
+        record
+        for record in records
+        if isinstance(record, Execution) and record.id == error.execution.id
+    )
+    assert gated_execution.outputs is not None
+    terminal = next(
+        record
+        for record in records
+        if isinstance(record, Event)
+        and record.execution.id == error.execution.id
+        and record.event_type == "execution-terminal"
+    )
+    assert terminal.status == "failed"
+    assert not any(
+        isinstance(record, Execution) and record.name == "Downstream after gate"
+        for record in records
+    )
+
+
+def test_run_evidence_policy_continues_by_default(tmp_path) -> None:
+    @run(name="Continue evidence run")
+    def workflow() -> None:
+        publish_gated_value(value=0)
+        downstream_after_gate()
+
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(workflow, publisher=publisher, source=source):
+            workflow()
+        records = publisher.records()
+
+    assert any(
+        isinstance(record, Execution) and record.name == "Downstream after gate"
+        for record in records
+    )
+
+
+def test_run_evidence_policy_exposes_every_required_evidence_outcome(tmp_path) -> None:
+    @run(name="All evidence outcomes", required_evidence_policy="raise")
+    def workflow() -> None:
+        collect_evidence()
+
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with pytest.raises(RequiredEvidenceFailedError) as raised:
+            with observe_run(workflow, publisher=publisher, source=source):
+                workflow()
+
+    assert [record.outcome for record in raised.value.evidence] == ["error", "pass"]
+
+
 class CsvTable:
     """Small pandas-shaped value without making pandas an SDK dependency."""
 
@@ -1003,6 +1110,23 @@ class CsvTable:
     def to_csv(self, *, index: bool, lineterminator: str) -> str:
         assert index is False
         return "value" + lineterminator + "1" + lineterminator
+
+
+def _fold_annotations(*, fold_number: int) -> dict[str, int]:
+    return {"fold_number": fold_number}
+
+
+@computation(
+    name="Publish annotated fold model",
+    outputs={
+        "model": BytesArtifact(
+            name="Annotated fold model",
+            annotation_factory=_fold_annotations,
+        ),
+    },
+)
+def publish_annotated_fold_model(*, fold_number: int) -> bytes:
+    return f"fold={fold_number}".encode()
 
 
 @dataclass(frozen=True)
@@ -1143,6 +1267,26 @@ def test_computation_output_declarations_own_metadata_and_output_bindings(
         "table": (outputs["table"].reference,),
         "metadata": (metadata.reference,),
     }
+
+
+def test_computation_output_annotation_factory_uses_call_parameters(tmp_path) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with OclpRun(publisher=publisher, source=source) as observed:
+            first = publish_annotated_fold_model(fold_number=1)
+            second = publish_annotated_fold_model(fold_number=2)
+            first_model = observed.outputs_for(first)["model"].artifact
+            second_model = observed.outputs_for(second)["model"].artifact
+
+    assert first_model.annotations == {"fold_number": 1}
+    assert second_model.annotations == {"fold_number": 2}
 
 
 def _id(name: str) -> str:

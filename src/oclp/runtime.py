@@ -19,7 +19,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol, TypeVar, get_args, get_origin, get_type_hints
+from typing import Any, Literal, Protocol, TypeVar, get_args, get_origin, get_type_hints
 from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
@@ -89,6 +89,36 @@ class RunAdapter(Protocol):
     strict: bool
 
 
+RequiredEvidencePolicy = Literal["continue", "raise"]
+
+
+class RequiredEvidenceFailedError(RuntimeError):
+    """Raised when an opted-in run observes non-passing required Evidence.
+
+    The Execution, outputs, Evidence, and terminal failed Event have already
+    been published when this error is raised.  It therefore changes workflow
+    control flow without changing the immutable OCLP materialization.
+    """
+
+    def __init__(
+        self,
+        *,
+        execution: RecordReference,
+        evidence: tuple[Evidence, ...],
+    ) -> None:
+        self.execution = execution
+        self.evidence = evidence
+        failed = ", ".join(
+            record.name or record.id
+            for record in evidence
+            if record.outcome != "pass"
+        )
+        super().__init__(
+            "required Evidence did not pass for Execution "
+            f"{execution.id}: {failed or 'unknown evaluator'}"
+        )
+
+
 @dataclass(frozen=True)
 class RunArtifactSet:
     """Static declaration of one ArtifactSet assembled at run completion.
@@ -152,11 +182,16 @@ class RunTemplate:
     name: str
     artifact_sets: tuple[RunArtifactSet, ...] = ()
     adapters: tuple[RunAdapter, ...] = ()
+    required_evidence_policy: RequiredEvidencePolicy = "continue"
 
     def __post_init__(self) -> None:
         names = [artifact_set.name for artifact_set in self.artifact_sets]
         if len(names) != len(set(names)):
             raise ValueError("run ArtifactSet names must be unique")
+        if self.required_evidence_policy not in {"continue", "raise"}:
+            raise ValueError(
+                "required_evidence_policy must be either 'continue' or 'raise'"
+            )
 
     def profile_for(self, run_id: UUID) -> ProfileBindings:
         """Return the portable profile binding for one concrete run."""
@@ -175,6 +210,7 @@ def run(
     name: str,
     artifact_sets: tuple[RunArtifactSet, ...] = (),
     adapters: tuple[RunAdapter, ...] = (),
+    required_evidence_policy: RequiredEvidencePolicy = "continue",
 ) -> Callable[[CallableT], CallableT]:
     """Declare an application workflow as one observed run boundary.
 
@@ -186,6 +222,10 @@ def run(
     ``artifact_sets`` declare immutable run-level collections assembled from
     exact child Computation outputs after successful completion.
     ``adapters`` are optional SDK integrations, such as an MLflow mirror.
+    ``required_evidence_policy='raise'`` stops the workflow after a real
+    Execution publishes non-passing required Evidence; ``'continue'``
+    preserves the default behavior of recording the failed Execution while
+    leaving subsequent application control flow to the workflow.
     """
 
     if not isinstance(name, str) or not name:
@@ -196,7 +236,12 @@ def run(
         raise TypeError("run artifact_sets must be a tuple of RunArtifactSet values")
     if not isinstance(adapters, tuple):
         raise TypeError("run adapters must be a tuple")
-    template = RunTemplate(name=name, artifact_sets=artifact_sets, adapters=adapters)
+    template = RunTemplate(
+        name=name,
+        artifact_sets=artifact_sets,
+        adapters=adapters,
+        required_evidence_policy=required_evidence_policy,
+    )
 
     def decorate(function: CallableT) -> CallableT:
         if not callable(function):
@@ -288,6 +333,7 @@ def observe_run(
         declared_artifact_sets=template.artifact_sets,
         adapters=active_adapters,
         run_name=template.name,
+        required_evidence_policy=template.required_evidence_policy,
     )
     observed.run_id = concrete_run_id
     with observed:
@@ -388,6 +434,7 @@ class OclpRun:
     declared_artifact_sets: tuple[RunArtifactSet, ...] = ()
     adapters: tuple[RunAdapter, ...] = ()
     run_name: str | None = None
+    required_evidence_policy: RequiredEvidencePolicy = "continue"
     run_id: UUID | None = field(default=None, init=False)
     _token: Token[OclpRun | None] | None = field(default=None, init=False, repr=False)
     _value_bindings: dict[int, _ValueBinding] = field(
@@ -901,6 +948,9 @@ class OclpRun:
                     value=value,
                     suffix=suffix,
                     artifact_id=output_artifact_ids[port],
+                    function=function,
+                    args=args,
+                    kwargs=kwargs,
                 )
             outputs = {
                 port: (artifact.reference,)
@@ -991,6 +1041,14 @@ class OclpRun:
                 port=port,
                 artifact=artifact,
                 execution=execution_ref,
+            )
+        if (
+            self.required_evidence_policy == "raise"
+            and any(record.outcome != "pass" for record in emitted_evidence)
+        ):
+            raise RequiredEvidenceFailedError(
+                execution=execution_ref,
+                evidence=emitted_evidence,
             )
         return result
 
@@ -1155,6 +1213,9 @@ class OclpRun:
         value: object,
         suffix: str,
         artifact_id: str,
+        function: Callable[..., object],
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
     ) -> PublishedArtifact:
         if spec.name is None:  # guarded when @computation is declared.
             raise ValueError(
@@ -1162,10 +1223,16 @@ class OclpRun:
                 "ArtifactType name"
             )
         relative_path = spec.path or f"{suffix}/{port}.{spec.suffix}"
-        return spec.persist(
+        resolved_spec = _resolve_output_annotations(
+            spec=spec,
+            function=function,
+            args=args,
+            kwargs=kwargs,
+        )
+        return resolved_spec.persist(
             publisher=self.publisher,
             artifact_id=artifact_id,
-            name=spec.name,
+            name=resolved_spec.name,
             relative_path=relative_path,
             value=value,
             created_at=utc_now(),
@@ -1766,6 +1833,53 @@ def _json_value(value: object) -> JsonValue | None:
         return json.loads(json.dumps(value))
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_output_annotations(
+    *,
+    spec: ArtifactType,
+    function: Callable[..., object],
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+) -> ArtifactType:
+    """Resolve one optional output annotation factory against call arguments."""
+
+    factory = spec.annotation_factory
+    if factory is None:
+        return spec
+    bound = inspect.signature(function).bind(*args, **kwargs)
+    bound.apply_defaults()
+    factory_signature = inspect.signature(factory)
+    parameters = factory_signature.parameters.values()
+    accepts_keywords = any(
+        parameter.kind is parameter.VAR_KEYWORD for parameter in parameters
+    )
+    values = (
+        dict(bound.arguments)
+        if accepts_keywords
+        else {
+            name: value
+            for name, value in bound.arguments.items()
+            if name in factory_signature.parameters
+        }
+    )
+    try:
+        resolved = factory(**values)
+    except TypeError as error:
+        raise TypeError(
+            "Artifact annotation_factory could not be called with the "
+            f"arguments for {function.__qualname__!r}"
+        ) from error
+    if not isinstance(resolved, Mapping):
+        raise TypeError("Artifact annotation_factory must return a mapping")
+    annotations = {**spec.annotations, **dict(resolved)}
+    if _json_value(annotations) != annotations:
+        raise TypeError(
+            "Artifact annotation_factory must return JSON-compatible values"
+        )
+    declaration = spec.model_dump()
+    declaration["annotations"] = annotations
+    return type(spec).model_validate(declaration)
 
 
 def _callable_key(function: Callable[..., object]) -> str:
