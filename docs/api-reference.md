@@ -250,7 +250,7 @@ with a Diagnostic rather than disappearing as logs.
 ### `@run(...)` and `observe_run(...)`
 
 ```python
-@run(name="Daily training", artifact_sets=())
+@run(name="Daily training", artifact_sets=(), adapters=())
 def train(*, observed): ...
 
 
@@ -263,7 +263,80 @@ Execution. `observe_run` creates a fresh run UUID, activates the runtime, and
 applies the same `profiles.run` binding to the real child Executions. Supply
 `run_id=` only when the application already owns that concrete UUID.
 `run_template(workflow)` returns the static `RunTemplate` declaration attached
-by `@run`.
+by `@run`. `adapters` holds optional SDK integration objects. It can also be
+supplied to `observe_run(...)` for bootstrap-time configuration.
+
+### `MlflowAdapter` (optional)
+
+Install the optional extra first:
+
+```bash
+pip install 'oclp[mlflow]'
+```
+
+Then attach one adapter to an observed run:
+
+```python
+from oclp import MlflowAdapter, observe_run, run
+
+@run(
+    name="Daily training",
+    adapters=(
+        MlflowAdapter(
+            experiment_name="daily-training",
+            tracking_uri="sqlite:///mlflow.db",
+            payload_artifacts=frozenset({"Training report"}),
+        ),
+    ),
+)
+def workflow(): ...
+
+with observe_run(workflow, publisher=publisher, source=source):
+    workflow()
+```
+
+The runtime calls `for_run()` when available, so an adapter declaration
+receives a fresh active mirror instance for each observation.
+When neither `tracking_uri` nor `artifact_location` is set, the local SDK
+publisher default is a SQLite MLflow store and artifact directory beside the
+OCLP record directory.
+
+The adapter mirrors canonical OCLP record JSON, UUID tags, typed Execution
+parameters, and top-level numeric Evidence details. It mirrors model payloads
+by default; `payload_artifacts` opts additional named payloads in. OCLP is
+always authoritative: the adapter never reads MLflow to create, validate, or
+query OCLP provenance.
+
+An application can deliberately add domain-specific comparison values without
+recreating OCLP reference wiring:
+
+```python
+adapter.log_metrics({"validation_rmse": 42.1})
+adapter.log_parameters({"candidate_family": "CatBoostRegressor"})
+```
+
+Use this only for values whose MLflow presentation is an application decision;
+the adapter already mirrors OCLP Execution parameters and Evidence records.
+
+By default, an MLflow error does not undo OCLP publication. The runtime emits
+an `adapter-failed` Event with an integration Diagnostic on the next real
+Execution. Use `strict=True` to make the mirror failure fail the application
+workflow. For explicit registry publication, nominate the exact Artifact by
+its application-owned name:
+
+```python
+from oclp import MlflowAdapter, MlflowModelRegistration
+
+adapter = MlflowAdapter(
+    experiment_name="daily-training",
+    model_registration=MlflowModelRegistration(
+        artifact_name="Validated model",
+        registered_model_name="demand-model",
+    ),
+)
+```
+
+Registration is opt-in; the adapter does not infer promotion policy.
 
 For scoped observation that is not a batch run, use:
 

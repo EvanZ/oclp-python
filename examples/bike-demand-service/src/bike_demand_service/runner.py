@@ -7,6 +7,7 @@ from math import isfinite
 from pathlib import Path
 
 from oclp import (
+    MlflowAdapter,
     OclpRun,
     RunArtifactSet,
     capture_git_source_overlay,
@@ -28,11 +29,6 @@ from bike_demand_service.data import (
     prepare_features,
 )
 from bike_demand_service.environment import DemoEnvironment
-from bike_demand_service.mlflow import (
-    MLflowSettings,
-    MLflowTracker,
-    create_mlflow_tracker,
-)
 from bike_demand_service.modeling import (
     create_training_plan,
     evaluate_folds,
@@ -59,6 +55,7 @@ _RELEASE_SMOKE_REQUEST: dict[str, int | float] = {
     "hum": 0.55,
     "windspeed": 0.18,
 }
+_MLFLOW_EXPERIMENT_NAME = "oclp-bike-demand-service"
 
 
 @dataclass(frozen=True)
@@ -113,11 +110,15 @@ class _ReleaseSmokeTestResult:
             manifest_name="Bike demand release manifest",
         ),
     ),
+    adapters=(
+        MlflowAdapter(
+            experiment_name=_MLFLOW_EXPERIMENT_NAME,
+        ),
+    ),
 )
 def run_bike_training(
     *,
     observed: OclpRun,
-    tracker: MLflowTracker,
     materialization_id: str,
     fold_count: int,
     temporal_validation_rmse_max: float,
@@ -126,10 +127,9 @@ def run_bike_training(
 
     ``@run`` gives every real decorated Computation the same SDK-owned run
     profile. The active SDK context carries exact Artifact bindings between
-    decorated calls automatically. ``observed`` is used only to inspect those
-    already-materialized records for the optional MLflow mirror and to inspect
-    required Evidence; it does not publish Executions, Events, or Artifacts
-    itself.
+    decorated calls automatically. ``observed`` is used only to inspect
+    required Evidence; the SDK-owned optional MLflow adapter mirrors records,
+    model payloads, and metrics without application tracking calls.
     """
 
     # Acquisition is an Artifact boundary, not a derived Computation. The
@@ -139,177 +139,70 @@ def run_bike_training(
         materialization_id=materialization_id,
         fold_count=fold_count,
     )
-    source_snapshot = download_source_csv()
-    tracker.mirror_artifacts(
-        artifacts={
-            "source-snapshot": source_snapshot,
-            "training-plan": training_plan,
-        },
-        artifact_path="oclp/acquired",
+    mlflow = observed.adapter(MlflowAdapter)
+    mlflow.log_parameters(
+        {
+            "materialization_id": materialization_id,
+            "temporal_fold_count": fold_count,
+            "temporal_validation_rmse_max": temporal_validation_rmse_max,
+            "uci_dataset_id": UCI_BIKE_SHARING_DATASET_ID,
+        }
     )
+    source_snapshot = download_source_csv()
 
     prepared = prepare_features(source_snapshot, training_plan)
-    prepare_artifacts = observed.outputs_for(prepared)
-    prepare_ref = observed.execution_for(prepared)
-    prepare_computation = observed.computation_for(prepared)
-    tracker.log_parameters({"uci_dataset_id": UCI_BIKE_SHARING_DATASET_ID})
-    tracker.log_metrics({"source_rows": float(len(prepared["features"]))})
+    mlflow.log_metrics({"source_rows": len(prepared["features"])})
 
     # Passing exact raw values between decorated calls is sufficient within
     # this OclpRun: the SDK reuses their materialized Artifact bindings when it
-    # records the next Execution. The handles above are only for MLflow.
+    # records the next Execution.
     feature_table = prepared["features"]
     folds = prepared["fold_definition"]
-    with tracker.run("Prepare Features", nested=True):
-        tracker.attach_execution(
-            execution=prepare_ref,
-            computation=prepare_computation,
-            inputs={
-                "source_snapshot": (source_snapshot.reference,),
-                "training_plan": (training_plan.reference,),
-            },
-            outputs={
-                port: (artifact.reference,)
-                for port, artifact in prepare_artifacts.items()
-            },
-            artifacts=prepare_artifacts,
-        )
-        tracker.log_parameters(
-            {
-                "fold_count": len(prepared["fold_definition"]["folds"]),
-                "holdout_start": HOLDOUT_START.isoformat(),
-            }
-        )
-        tracker.log_metrics({"prepared_rows": float(len(prepared["features"]))})
 
     fold_prediction_artifacts = []
     for fold in prepared["fold_definition"]["folds"]:
         fold_number = int(fold["fold"])
-        with tracker.run(f"Train temporal fold {fold_number}", nested=True):
-            tracker.log_parameters(
-                {
-                    "fold": fold_number,
-                    "train_end": str(fold["train_end"]),
-                    "validation_start": str(fold["validation_start"]),
-                    "validation_end": str(fold["validation_end"]),
-                    "model": "CatBoostRegressor",
-                }
-            )
-            result = train_fold(
-                feature_table,
-                folds,
-                fold_number=fold_number,
-            )
-            train_artifacts = observed.outputs_for(result)
-            train_ref = observed.execution_for(result)
-            train_computation = observed.computation_for(result)
-            model_artifact = train_artifacts["model"]
-            predictions = train_artifacts["validation_predictions"]
-            metrics = train_artifacts["metrics"]
-            tracker.attach_execution(
-                execution=train_ref,
-                computation=train_computation,
-                inputs={
-                    "feature_table": (observed.artifact_for(feature_table).reference,),
-                    "fold_definition": (observed.artifact_for(folds).reference,),
-                },
-                outputs={
-                    "model": (model_artifact.reference,),
-                    "validation_predictions": (predictions.reference,),
-                    "metrics": (metrics.reference,),
-                },
-                artifacts=train_artifacts,
-            )
-            tracker.log_metrics(result["metrics"])
+        result = train_fold(
+            feature_table,
+            folds,
+            fold_number=fold_number,
+        )
+        mlflow.log_metrics(
+            {
+                f"fold-{fold_number}.{name}": value
+                for name, value in result["metrics"].items()
+            }
+        )
         fold_prediction_artifacts.append(result["validation_predictions"])
 
-    with tracker.run("Evaluate bike-demand candidate", nested=True):
-        evaluation_result = evaluate_folds(
-            tuple(fold_prediction_artifacts),
-            temporal_validation_rmse_max=temporal_validation_rmse_max,
-        )
-        evaluation_artifacts = observed.outputs_for(evaluation_result)
-        evaluation_ref = observed.execution_for(evaluation_result)
-        evaluation_computation = observed.computation_for(evaluation_result)
-        quality_evidence = observed.evidence_for(evaluation_result)
-        training_config_value = evaluation_result["training_config"]
-        tracker.attach_execution(
-            execution=evaluation_ref,
-            computation=evaluation_computation,
-            inputs={
-                "fold_predictions": tuple(
-                    observed.artifact_for(item).reference
-                    for item in fold_prediction_artifacts
-                ),
-            },
-            outputs={
-                port: (artifact.reference,)
-                for port, artifact in evaluation_artifacts.items()
-            },
-            artifacts=evaluation_artifacts,
-        )
-        tracker.log_metrics(evaluation_result["evaluation"])
-        if any(item.outcome != "pass" for item in quality_evidence):
-            raise RuntimeError("bike-demand temporal quality gate failed")
+    evaluation_result = evaluate_folds(
+        tuple(fold_prediction_artifacts),
+        temporal_validation_rmse_max=temporal_validation_rmse_max,
+    )
+    quality_evidence = observed.evidence_for(evaluation_result)
+    training_config_value = evaluation_result["training_config"]
+    mlflow.log_metrics(evaluation_result["evaluation"])
+    if any(item.outcome != "pass" for item in quality_evidence):
+        raise RuntimeError("bike-demand temporal quality gate failed")
 
-    with tracker.run("Train final bike-demand model", nested=True):
-        tracker.log_parameters(
-            {
-                "model": "CatBoostRegressor",
-                "training_window": "all pre-holdout rows",
-            }
-        )
-        final_result = train_final_model(
-            feature_table,
-            training_config_value,
-            training_window="all-pre-holdout-rows",
-        )
-        final_artifacts = observed.outputs_for(final_result)
-        final_train_ref = observed.execution_for(final_result)
-        final_train_computation = observed.computation_for(final_result)
-        final_model = final_result
-        tracker.attach_execution(
-            execution=final_train_ref,
-            computation=final_train_computation,
-            inputs={
-                "feature_table": (observed.artifact_for(feature_table).reference,),
-                "training_config": (
-                    observed.artifact_for(training_config_value).reference,
-                ),
-            },
-            outputs={"model": (final_artifacts["model"].reference,)},
-            artifacts=final_artifacts,
-        )
-        tracker.log_metrics(
-            {
-                "training_rows": int(
-                    (prepared["features"]["timestamp"] < HOLDOUT_START).sum()
-                )
-            }
-        )
+    final_model = train_final_model(
+        feature_table,
+        training_config_value,
+        training_window="all-pre-holdout-rows",
+    )
+    mlflow.log_metrics(
+        {
+            "training_rows": int(
+                (prepared["features"]["timestamp"] < HOLDOUT_START).sum()
+            )
+        }
+    )
 
-    with tracker.run("Score bike-demand holdout", nested=True):
-        score_result = score_holdout(final_model, feature_table)
-        score_artifacts = observed.outputs_for(score_result)
-        score_ref = observed.execution_for(score_result)
-        score_computation = observed.computation_for(score_result)
-        holdout_evidence = observed.evidence_for(score_result)
-        if any(item.outcome != "pass" for item in holdout_evidence):
-            raise RuntimeError("bike-demand holdout response contract failed")
-        tracker.attach_execution(
-            execution=score_ref,
-            computation=score_computation,
-            inputs={
-                "model": (observed.artifact_for(final_model).reference,),
-                "feature_table": (observed.artifact_for(feature_table).reference,),
-            },
-            outputs={
-                port: (artifact.reference,)
-                for port, artifact in score_artifacts.items()
-            },
-            artifacts=score_artifacts,
-        )
-        tracker.log_metrics(score_result["metrics"])
+    score_result = score_holdout(final_model, feature_table)
+    mlflow.log_metrics(score_result["metrics"])
+    holdout_evidence = observed.evidence_for(score_result)
+    if any(item.outcome != "pass" for item in holdout_evidence):
+        raise RuntimeError("bike-demand holdout response contract failed")
 
 
 @run(
@@ -365,7 +258,7 @@ def run_demo(
     _validate_temporal_validation_rmse_max(temporal_validation_rmse_max)
     environment = environment or DemoEnvironment.default()
     environment.prepare()
-    tracker = create_mlflow_tracker(MLflowSettings(environment.mlflow_root))
+    (environment.mlflow_root / "artifacts").mkdir(parents=True, exist_ok=True)
 
     with LocalArtifactPublisher(
         catalog_path=environment.catalog_path,
@@ -384,44 +277,21 @@ def run_demo(
                 name="Bike-demand training source overlay",
                 relative_path=f"source-overlays/{materialization_id}",
             )
-        with tracker.run(f"Bike demand model training — {materialization_id}"):
-            tracker.log_parameters(
-                {
-                    "materialization_id": materialization_id,
-                    "temporal_fold_count": fold_count,
-                    "temporal_validation_rmse_max": temporal_validation_rmse_max,
-                }
+        with observe_run(
+            run_bike_training,
+            publisher=publisher,
+            source=source,
+        ) as observed:
+            assert observed.run_id is not None
+            training_run_id = str(observed.run_id)
+            run_bike_training(
+                observed=observed,
+                materialization_id=materialization_id,
+                fold_count=fold_count,
+                temporal_validation_rmse_max=temporal_validation_rmse_max,
             )
-            with observe_run(
-                run_bike_training,
-                publisher=publisher,
-                source=source,
-            ) as observed:
-                assert observed.run_id is not None
-                training_run_id = str(observed.run_id)
-                run_bike_training(
-                    observed=observed,
-                    tracker=tracker,
-                    materialization_id=materialization_id,
-                    fold_count=fold_count,
-                    temporal_validation_rmse_max=temporal_validation_rmse_max,
-                )
-            model_release = observed.artifact_set("Bike demand CatBoost release")
-            assert model_release.manifest is not None
-            with tracker.run("Publish bike-demand model release", nested=True):
-                tracker.attach_artifact_set(
-                    artifact_set=model_release.reference,
-                    artifacts={
-                        **model_release.members,
-                        # The SDK-created sidecar identifies this exact
-                        # ArtifactSet; it is mirrored beside the release rather
-                        # than being a set member (which would be cyclic).
-                        "release-manifest-sidecar": model_release.manifest,
-                    },
-                )
-                tracker.log_metrics(
-                    {"release_members": len(model_release.artifact_set.members)}
-                )
+        model_release = observed.artifact_set("Bike demand CatBoost release")
+        assert model_release.manifest is not None
     release_smoke_materialization_id = f"{materialization_id}-release-smoke"
     with LocalArtifactPublisher(
         catalog_path=environment.catalog_path,
@@ -455,7 +325,7 @@ def run_demo(
         release_smoke_execution=smoke_result.execution,
         release_smoke_response=smoke_result.response,
         oclp_root=str(environment.oclp_root),
-        mlflow_tracking_uri=tracker.tracking_uri,
+        mlflow_tracking_uri=_mlflow_tracking_uri(environment),
     )
 
 
@@ -466,6 +336,12 @@ def _validate_materialization_id(materialization_id: str) -> None:
         raise ValueError(
             "materialization_id must be a non-empty value without whitespace"
         )
+
+
+def _mlflow_tracking_uri(environment: DemoEnvironment) -> str:
+    """Return the local URI derived by the SDK adapter for this environment."""
+
+    return "sqlite:///" + (environment.mlflow_root / "mlflow.db").resolve().as_posix()
 
 
 def _validate_temporal_validation_rmse_max(value: float) -> None:

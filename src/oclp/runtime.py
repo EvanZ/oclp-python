@@ -19,7 +19,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypeVar, get_args, get_origin, get_type_hints
+from typing import Any, Protocol, TypeVar, get_args, get_origin, get_type_hints
 from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
@@ -75,6 +75,18 @@ _ACTIVE_OUTPUT_ARTIFACT_IDS: ContextVar[Mapping[str, str] | None] = ContextVar(
 )
 CallableT = TypeVar("CallableT", bound=Callable[..., object])
 _RUN_TEMPLATE_ATTRIBUTE = "__oclp_run_template__"
+
+
+class RunAdapter(Protocol):
+    """Optional observer for records published within one :class:`OclpRun`.
+
+    Adapters are SDK integrations, not OCLP protocol records.  They may mirror
+    records elsewhere, but they must never be required to create or validate
+    the OCLP materialization itself.  Hooks are intentionally structural: an
+    adapter may implement only the lifecycle callbacks it needs.
+    """
+
+    strict: bool
 
 
 @dataclass(frozen=True)
@@ -139,6 +151,7 @@ class RunTemplate:
 
     name: str
     artifact_sets: tuple[RunArtifactSet, ...] = ()
+    adapters: tuple[RunAdapter, ...] = ()
 
     def __post_init__(self) -> None:
         names = [artifact_set.name for artifact_set in self.artifact_sets]
@@ -161,6 +174,7 @@ def run(
     *,
     name: str,
     artifact_sets: tuple[RunArtifactSet, ...] = (),
+    adapters: tuple[RunAdapter, ...] = (),
 ) -> Callable[[CallableT], CallableT]:
     """Declare an application workflow as one observed run boundary.
 
@@ -171,6 +185,7 @@ def run(
     Execution produced by decorated calls inside the workflow. Optional
     ``artifact_sets`` declare immutable run-level collections assembled from
     exact child Computation outputs after successful completion.
+    ``adapters`` are optional SDK integrations, such as an MLflow mirror.
     """
 
     if not isinstance(name, str) or not name:
@@ -179,7 +194,9 @@ def run(
         isinstance(artifact_set, RunArtifactSet) for artifact_set in artifact_sets
     ):
         raise TypeError("run artifact_sets must be a tuple of RunArtifactSet values")
-    template = RunTemplate(name=name, artifact_sets=artifact_sets)
+    if not isinstance(adapters, tuple):
+        raise TypeError("run adapters must be a tuple")
+    template = RunTemplate(name=name, artifact_sets=artifact_sets, adapters=adapters)
 
     def decorate(function: CallableT) -> CallableT:
         if not callable(function):
@@ -236,6 +253,7 @@ def observe_run(
     parent_execution: RecordReference | None = None,
     profiles: ProfileBindings | None = None,
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS,
+    adapters: tuple[RunAdapter, ...] | None = None,
 ) -> Generator[OclpRun, None, None]:
     """Activate the SDK runtime for one ``@run``-declared workflow.
 
@@ -257,6 +275,10 @@ def observe_run(
             "concrete run UUID; do not override it"
         )
     merged_profiles[RUN_PROFILE] = generated
+    selected_adapters = template.adapters if adapters is None else adapters
+    if not isinstance(selected_adapters, tuple):
+        raise TypeError("observe_run adapters must be a tuple")
+    active_adapters = tuple(_adapter_instance(adapter) for adapter in selected_adapters)
     observed = OclpRun(
         publisher=publisher,
         source=source,
@@ -264,6 +286,8 @@ def observe_run(
         profiles=merged_profiles,
         artifact_adapters=artifact_adapters,
         declared_artifact_sets=template.artifact_sets,
+        adapters=active_adapters,
+        run_name=template.name,
     )
     observed.run_id = concrete_run_id
     with observed:
@@ -273,6 +297,18 @@ def observe_run(
             raise
         else:
             observed.publish_declared_artifact_sets()
+
+
+def _adapter_instance(adapter: RunAdapter) -> RunAdapter:
+    """Return a fresh runtime instance when an adapter declares that policy."""
+
+    factory = getattr(adapter, "for_run", None)
+    if factory is None:
+        return adapter
+    instance = factory()
+    if instance is adapter:
+        raise ValueError("run adapter for_run() must return a fresh instance")
+    return instance
 
 
 @dataclass(frozen=True)
@@ -350,6 +386,8 @@ class OclpRun:
     profiles: ProfileBindings | None = None
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS
     declared_artifact_sets: tuple[RunArtifactSet, ...] = ()
+    adapters: tuple[RunAdapter, ...] = ()
+    run_name: str | None = None
     run_id: UUID | None = field(default=None, init=False)
     _token: Token[OclpRun | None] | None = field(default=None, init=False, repr=False)
     _value_bindings: dict[int, _ValueBinding] = field(
@@ -377,15 +415,109 @@ class OclpRun:
     _declared_artifact_sets: dict[str, ArtifactSetHandle] = field(
         default_factory=dict, init=False, repr=False
     )
+    _pending_adapter_diagnostics: list[Diagnostic] = field(
+        default_factory=list, init=False, repr=False
+    )
+    _adapter_event_sequences: dict[str, int] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _last_execution: RecordReference | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __enter__(self) -> OclpRun:
         self._token = _ACTIVE_RUN.set(self)
+        try:
+            self._notify_adapters("on_run_start", self)
+        except BaseException:
+            _ACTIVE_RUN.reset(self._token)
+            self._token = None
+            raise
         return self
 
-    def __exit__(self, *_: object) -> None:
+    def __exit__(
+        self,
+        error_type: object,
+        error: BaseException | None,
+        _traceback: object,
+    ) -> None:
         assert self._token is not None
-        _ACTIVE_RUN.reset(self._token)
-        self._token = None
+        try:
+            self._notify_adapters(
+                "on_run_end",
+                self,
+                error,
+                related_execution=self._last_execution,
+            )
+        finally:
+            _ACTIVE_RUN.reset(self._token)
+            self._token = None
+
+    def _notify_adapters(
+        self,
+        callback: str,
+        *args: object,
+        related_execution: RecordReference | None = None,
+        **kwargs: object,
+    ) -> None:
+        """Invoke an optional integration hook without weakening OCLP writes."""
+
+        for adapter in self.adapters:
+            hook = getattr(adapter, callback, None)
+            if hook is None:
+                continue
+            try:
+                hook(*args, **kwargs)
+            except BaseException as error:
+                if getattr(adapter, "strict", False):
+                    raise
+                diagnostic = Diagnostic(
+                    code=type(error).__name__,
+                    message=str(error) or type(error).__name__,
+                    stage="integration",
+                )
+                if related_execution is None:
+                    self._pending_adapter_diagnostics.append(diagnostic)
+                else:
+                    self._publish_adapter_diagnostic(
+                        execution=related_execution,
+                        diagnostic=diagnostic,
+                        adapter=type(adapter).__name__,
+                    )
+
+    def _flush_adapter_diagnostics(self, execution: RecordReference) -> None:
+        """Attach earlier run-level integration failures to a real Execution."""
+
+        for diagnostic in self._pending_adapter_diagnostics:
+            self._publish_adapter_diagnostic(
+                execution=execution,
+                diagnostic=diagnostic,
+                adapter="run-adapter",
+            )
+        self._pending_adapter_diagnostics.clear()
+
+    def _publish_adapter_diagnostic(
+        self,
+        *,
+        execution: RecordReference,
+        diagnostic: Diagnostic,
+        adapter: str,
+    ) -> None:
+        """Publish a durable Diagnostic without reclassifying the Execution."""
+
+        sequence = self._adapter_event_sequences.get(execution.id, 3)
+        self._adapter_event_sequences[execution.id] = sequence + 1
+        self.publisher.publish(
+            Event(
+                id=new_record_id(),
+                execution=execution,
+                event_type="adapter-failed",
+                occurred_at=utc_now(),
+                sequence=sequence,
+                diagnostic=diagnostic,
+                data={"adapter": adapter},
+            )
+        )
 
     def artifact_set(self, name: str) -> ArtifactSetHandle:
         """Return one ArtifactSet published from this run's declaration.
@@ -402,6 +534,24 @@ class OclpRun:
                 f"this OCLP run has no published declared ArtifactSet {name!r}; "
                 f"available sets: {available}"
             ) from error
+
+    def adapter(self, adapter_type: type[Any]) -> Any:
+        """Return the one active integration adapter of ``adapter_type``.
+
+        This is for deliberate application-level integration behavior, such
+        as selecting domain metrics for an MLflow mirror. It never publishes
+        OCLP records itself.
+        """
+
+        matches = [
+            adapter for adapter in self.adapters if isinstance(adapter, adapter_type)
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"expected exactly one active {adapter_type.__name__} adapter, "
+                f"found {len(matches)}"
+            )
+        return matches[0]
 
     def publish_declared_artifact_sets(self) -> None:
         """Resolve and publish the successful run's declared ArtifactSets."""
@@ -617,12 +767,19 @@ class OclpRun:
                     profiles=manifest_profiles,
                 )
             )
-        return ArtifactSetHandle(
+        handle = ArtifactSetHandle(
             artifact_set=artifact_set,
             reference=reference,
             members=member_handles,
             manifest=manifest,
         )
+        self._notify_adapters(
+            "on_artifact_set",
+            self,
+            handle,
+            related_execution=self._last_execution,
+        )
+        return handle
 
     def evidence_for(self, value: object) -> tuple[Evidence, ...]:
         """Return Evidence emitted for required Contracts on one Execution."""
@@ -667,6 +824,7 @@ class OclpRun:
             artifact=published,
             execution=None,
         )
+        self._notify_adapters("on_artifact", self, handle)
         return handle
 
     def invoke(
@@ -717,12 +875,14 @@ class OclpRun:
                 outputs=None,
                 requested_outputs=_requested_output_names(template),
             )
+            self._last_execution = execution_ref
             self._publish_failure_events(
                 execution=execution,
                 execution_ref=execution_ref,
                 started_at=started_at,
                 error=error,
             )
+            self._flush_adapter_diagnostics(execution_ref)
             raise
 
         try:
@@ -764,12 +924,14 @@ class OclpRun:
                 outputs=None,
                 requested_outputs=_requested_output_names(template),
             )
+            self._last_execution = execution_ref
             self._publish_failure_events(
                 execution=execution,
                 execution_ref=execution_ref,
                 started_at=started_at,
                 error=error,
             )
+            self._flush_adapter_diagnostics(execution_ref)
             raise
 
         execution, execution_ref = self._publish_execution(
@@ -781,6 +943,7 @@ class OclpRun:
             outputs=outputs,
             requested_outputs=_requested_output_names(template),
         )
+        self._last_execution = execution_ref
         self._execution_computations[execution_ref.id] = computation_ref
         emitted_evidence = self._evaluate_required_evidence(
             template=template,
@@ -803,6 +966,16 @@ class OclpRun:
             port: template.output_artifacts[port].handle(artifact)
             for port, artifact in materialized_outputs.items()
         }
+        self._flush_adapter_diagnostics(execution_ref)
+        self._notify_adapters(
+            "on_execution",
+            self,
+            execution=execution,
+            computation=computation,
+            outputs=output_handles,
+            evidence=emitted_evidence,
+            related_execution=execution_ref,
+        )
         self._execution_outputs[execution_ref.id] = output_handles
         if artifact_set_outputs:
             self._execution_artifact_sets[execution_ref.id] = artifact_set_outputs

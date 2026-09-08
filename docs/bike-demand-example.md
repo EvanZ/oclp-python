@@ -2,8 +2,8 @@
 
 The SDK repository includes a self-contained consumer project at
 [`examples/bike-demand-service`](https://github.com/EvanZ/oclp-python/tree/main/examples/bike-demand-service).
-It dogfoods OCLP on a public UCI Bike Sharing dataset without adding
-data-science or MLflow dependencies to the `oclp` package itself.
+It dogfoods OCLP on a public UCI Bike Sharing dataset. MLflow remains an
+optional SDK extra (`oclp[mlflow]`), rather than a core dependency.
 
 It is a reference project, not an SDK feature or a prescribed architecture.
 The application owns its computation boundaries, storage, ML workflow, and
@@ -16,9 +16,8 @@ contracts. OCLP makes its durable observations interoperable.
 | `data.py` | Downloads the UCI source and prepares leakage-safe temporal features. | Declares a CSV Artifact acquisition and the feature-preparation Computation. |
 | `modeling.py` | Declares the training-plan Artifact, trains CatBoost folds and final model, evaluates, and scores holdout data. | Declares reusable model boundaries. |
 | `environment.py` | Resolves local OCLP, MLflow, and payload directories. | Local-only execution environment; not a durable run input. |
-| `runner.py` | Declares and coordinates one model-training run. | Uses SDK `@run` / `observe_run(...)`, passes persisted outputs into training, and declares the final cross-computation ArtifactSet at the run boundary. |
+| `runner.py` | Declares and coordinates one model-training run. | Uses SDK `@run` / `observe_run(...)`, passes persisted outputs into training, declares the final cross-computation ArtifactSet, and configures the optional SDK MLflow adapter. |
 | `oclp.publishing` | Writes immutable payload bytes, hashes them, and persists canonical records. | Generic local persistence; no bike-specific policy. |
-| `mlflow.py` | Owns all interaction with local MLflow. | Opens MLflow runs, logs application-selected metrics/parameters, links OCLP references, and mirrors immutable payloads. |
 
 All generated data is local and ignored by Git:
 
@@ -176,8 +175,19 @@ source basis for the checkout, and activates it once with
 `observe_run(...)`. The SDK then materializes and publishes one source-bound
 Computation record for each observed decorated callable in that run. The SDK derives
 `implementation.locator` directly from the function—for example,
-`bike_demand_service.data.prepare_features`—and the runner can retrieve the
-resulting reference from the observed result for the optional MLflow bridge.
+`bike_demand_service.data.prepare_features`.
+
+The optional MLflow mirror is part of that run declaration, rather than a
+bootstrap-only observer:
+
+```python
+@run(
+    name="Bike demand model training",
+    artifact_sets=(...),
+    adapters=(MlflowAdapter(experiment_name="oclp-bike-demand-service"),),
+)
+def run_bike_training(...): ...
+```
 
 ```python
 environment = DemoEnvironment.default()
@@ -202,9 +212,8 @@ with observe_run(
     publisher=publisher,
     source=source,
 ) as observed:
-    training_result = run_bike_training(
+    run_bike_training(
         observed=observed,
-        tracker=tracker,
         materialization_id=materialization_id,
         fold_count=3,
         temporal_validation_rmse_max=250,
@@ -279,36 +288,22 @@ decorator persists the configuration as JSON and its exact reference is bound
 to `prepare_features`. This makes the fold-count choice a real, portable input
 to the computation that uses it.
 
-### 4. The runner bridges automatic observations to MLflow
+### 4. The SDK mirrors observations to MLflow
 
-The source snapshot is an external input Artifact; it is not an output of a
-fabricated ingest Execution. Feature preparation is a decorated multi-output
-Computation: the SDK creates its Execution, standard execution Events, and
-output bindings automatically. The runner asks `observed` for those exact
-references only for the optional MLflow mirror; OCLP dataflow itself already
-uses the raw returned values above.
+`MlflowAdapter` observes the records the runtime has already published. It
+opens one MLflow run for the OCLP run, logs canonical record JSON and UUID
+cross-links, mirrors typed Execution parameters and numeric Evidence details,
+and uploads model payloads by default. The runner does not retrieve OCLP
+references merely to make MLflow work.
 
-```python
-prepare_ref = observed.execution_for(prepared)
-prepare_computation = observed.computation_for(prepared)
-tracker.attach_execution(
-    execution=prepare_ref,
-    computation=prepare_computation,
-    inputs={
-        "source_snapshot": (source_snapshot.reference,),
-        "training_plan": (training_plan.reference,),
-    },
-    outputs={port: (artifact.reference,) for port, artifact in prepare_outputs.items()},
-    artifacts=prepare_outputs,
-)
-```
+The runner adds a small set of domain-selected values such as validation RMSE
+through `MlflowAdapter.log_metrics(...)`; it does not repeat OCLP artifact or
+Execution publication.
 
-The root MLflow run mirrors acquired source/configuration Artifacts, each
-computation child run mirrors the Artifacts it produced, and the release child
-run mirrors every release member plus the materialized release-manifest sidecar.
-Each mirror has an `artifact-manifest.json` with the OCLP ID, digest, media
-type, and MLflow destination. OCLP remains the immutable source of truth;
-MLflow deliberately holds convenient copies for its experiment UI.
+Non-model payloads remain in OCLP unless the application explicitly selects
+their display names in `payload_artifacts`. This avoids silently copying large
+datasets. MLflow failures produce an `adapter-failed` OCLP Event with a
+Diagnostic by default; `strict=True` makes mirroring fail the application run.
 
 The SDK observes temporal-fold training, candidate evaluation, final-model
 training, and holdout scoring and materializes their declared outputs.
@@ -412,17 +407,14 @@ record store or Artifact registry.
 
 | Concern | OCLP | MLflow in this demo |
 | --- | --- | --- |
-| Immutable model/data/prediction bytes | Canonical Artifacts at local file locations | Mirrored into the owning MLflow run for inspection |
-| Exact inputs and outputs | Digest-bound Execution references | Linked through tags and a small bridge manifest |
+| Immutable model/data/prediction bytes | Canonical Artifacts at local file locations | Model payloads mirrored by default; other payloads are opt-in |
+| Exact inputs and outputs | Digest-bound Execution references | Linked through UUID tags and canonical record JSON |
 | Quality gates | Evidence records | Metric comparison and inspection |
-| Batch grouping | Shared UUID-based run-profile `run_id` across real Executions | Parent and nested MLflow runs |
+| Batch grouping | Shared UUID-based run-profile `run_id` across real Executions | One mirror run per OCLP run |
 | Parameters and scalar metrics | Durable Execution/Evidence details where meaningful | Experiment-comparison UI |
 
-Every MLflow run is tagged with its OCLP Execution and Computation IDs and
-record digests. MLflow logs `oclp/record-links.json` plus a local
-`artifact-manifest.json` beside each mirrored OCLP payload. The copies are for
-MLflow inspection; their identity always comes from the OCLP reference and
-digest.
+MLflow is a mirror only: its copies never determine OCLP identity, validation,
+or lineage.
 
 Start the local MLflow UI with:
 

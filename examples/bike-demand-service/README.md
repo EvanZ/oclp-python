@@ -102,15 +102,13 @@ and an operational export rather than synchronously persisting every request.
 The batch milestone also uses MLflow as a parallel experiment-tracking view.
 It is not the source of truth for OCLP records or Artifact identity.
 
-- One parent MLflow run represents the model-training batch.
-- Nested MLflow runs mirror the real OCLP Executions, including every fold.
-- MLflow records tunable parameters, per-fold and aggregate metrics, and
-  human-oriented charts or reports.
-- Every MLflow run is tagged with the corresponding OCLP Execution and
-  Computation identities and digests.
-- MLflow mirrors acquired inputs on the parent run, produced Artifacts on their
-  owning child run, and release members on the release run. Every mirror has
-  an OCLP ID and digest in an adjacent manifest.
+- One MLflow run mirrors one OCLP model-training run.
+- The SDK adapter logs canonical OCLP record JSON, UUID cross-links, typed
+  Execution parameters, and numeric Evidence details.
+- Model payloads are mirrored by default; other payloads are opt-in, avoiding
+  accidental copies of large datasets.
+- OCLP remains authoritative. By default an MLflow failure becomes a durable
+  OCLP `adapter-failed` Event with a Diagnostic instead of losing OCLP records.
 
 The initial demo will use local MLflow metadata and artifacts under
 `data/mlflow/`. This makes the MLflow UI easy to start without a service, while
@@ -130,8 +128,7 @@ examples/bike-demand-service/
     data.py                   # UCI access and time-ordered feature preparation
     modeling.py               # training plan, CatBoost training, evaluation, scoring
     environment.py            # local OCLP, payload, and MLflow storage locations
-    runner.py                 # declared run, bootstrap, and nested MLflow instrumentation
-    mlflow.py                 # all MLflow interaction and OCLP run correlation
+    runner.py                 # declared run, bootstrap, and SDK MLflow adapter configuration
     cli.py                    # executable model-training command
     service.py                # release-backed FastAPI application factory
   tests/                      # preparation, tracking, and FastAPI contract tests
@@ -186,10 +183,10 @@ Or start MLflow's local UI against the independent SQLite tracking database:
 uv run mlflow ui --backend-store-uri "sqlite:///$(pwd)/data/mlflow/mlflow.db"
 ```
 
-MLflow receives convenient copies of the CatBoost model, dataset, prediction,
-and release payloads under `oclp/`. Their adjacent manifests and
-`oclp/record-links.json` bind every copy to its exact OCLP record ID and digest;
-the canonical OCLP Artifact remains the source of truth.
+MLflow receives canonical OCLP record JSON and a convenient copy of the
+CatBoost model under `oclp/`. Non-model payloads are not copied unless the
+application explicitly selects them. The canonical OCLP Artifact remains the
+source of truth.
 
 ## Implementation sequence
 

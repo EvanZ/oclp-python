@@ -1955,6 +1955,9 @@ dependencies = [
 duckdb = [
     { name = "duckdb" },
 ]
+mlflow = [
+    { name = "mlflow" },
+]
 parquet = [
     { name = "pyarrow" },
 ]
@@ -1966,6 +1969,7 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.1,<2" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "lightgbm", marker = "extra == 'lightgbm'", specifier = ">=4.0,<5" },
+    { name = "mlflow", marker = "extra == 'mlflow'", specifier = ">=3.0,<4" },
     { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.26,<3" },
     { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=18,<24" },
     { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=18,<24" },
@@ -1977,7 +1981,7 @@ requires-dist = [
     { name = "tomli-w", marker = "extra == 'toml'", specifier = ">=1,<2" },
     { name = "xgboost", marker = "extra == 'xgboost'", specifier = ">=2.1,<4" },
 ]
-provides-extras = ["duckdb", "catboost", "xgboost", "sklearn", "parquet", "arrow", "numpy", "yaml", "toml", "xml", "lightgbm"]
+provides-extras = ["duckdb", "catboost", "xgboost", "sklearn", "parquet", "arrow", "numpy", "yaml", "toml", "xml", "lightgbm", "mlflow"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1994,8 +1998,7 @@ source = { editable = "." }
 dependencies = [
     { name = "catboost" },
     { name = "fastapi" },
-    { name = "mlflow" },
-    { name = "oclp", extra = ["duckdb", "parquet"] },
+    { name = "oclp", extra = ["duckdb", "mlflow", "parquet"] },
     { name = "pandas" },
     { name = "scikit-learn" },
     { name = "ucimlrepo" },
@@ -2013,8 +2016,7 @@ dev = [
 requires-dist = [
     { name = "catboost", specifier = ">=1.2,<2" },
     { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "mlflow", specifier = ">=3.0,<4" },
-    { name = "oclp", extras = ["duckdb", "parquet"], editable = "../../" },
+    { name = "oclp", extras = ["duckdb", "parquet", "mlflow"], editable = "../../" },
     { name = "pandas", specifier = ">=2.2,<3" },
     { name = "scikit-learn", specifier = ">=1.6,<2" },
     { name = "ucimlrepo", specifier = ">=0.0.7,<1" },

@@ -3,10 +3,11 @@
 `@run` declares an application workflow that coordinates several real
 Computations. It does not create a root Execution or synthetic flow edges.
 `observe_run(...)` creates a fresh UUID and applies the same `profiles.run`
-binding to every real Execution observed inside that context.
+binding to every real Execution observed inside that context. Optional SDK
+integration adapters may mirror those already-published records elsewhere.
 
 ```python
-from oclp import RunArtifactSet, observe_run, run
+from oclp import MlflowAdapter, RunArtifactSet, observe_run, run
 
 
 @run(
@@ -22,6 +23,7 @@ from oclp import RunArtifactSet, observe_run, run
             manifest_name="Demand model release manifest",
         ),
     ),
+    adapters=(MlflowAdapter(experiment_name="daily-training"),),
 )
 def train_demand_model(*, fold_count: int):
     source = acquire_source_snapshot()
@@ -42,6 +44,10 @@ with observe_run(
 
 release = observed.artifact_set("Demand model release")
 ```
+
+When the destination is bootstrap configuration rather than a static workflow
+choice, pass `adapters=(...)` to `observe_run(...)` instead. Adapters are
+optional integration mirrors; OCLP publication remains authoritative.
 
 `RunArtifactSet` declarations are resolved only when the `observe_run(...)`
 context completes successfully. Each member references a persisted output port

@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 import pytest
@@ -22,7 +21,7 @@ from oclp import (
     computation_input_artifact_types,
     computation_template,
 )
-from oclp.models import Execution, PortDefinition, RecordReference
+from oclp.models import Execution, PortDefinition
 from oclp.publishing import LocalArtifactPublisher
 
 import bike_demand_service.data as data_module
@@ -32,10 +31,6 @@ from bike_demand_service.data import (
     download_source_artifact,
     download_source_csv,
     prepare_features,
-)
-from bike_demand_service.mlflow import (
-    MLflowSettings,
-    create_mlflow_tracker,
 )
 from bike_demand_service.modeling import (
     create_training_plan,
@@ -389,52 +384,6 @@ def test_training_plan_is_an_acquired_json_artifact(tmp_path: Path) -> None:
     assert plan.artifact.media_type == "application/json"
 
 
-def test_mlflow_bridge_tags_one_run_with_oclp_references(tmp_path: Path) -> None:
-    settings = MLflowSettings(root=tmp_path / "mlflow")
-    tracker = create_mlflow_tracker(settings)
-    execution = _reference("urn:oclp-bike-demand:execution:test")
-    computation = _reference("urn:oclp-bike-demand:computation:test")
-    with LocalArtifactPublisher(
-        catalog_path=tmp_path / "oclp" / "catalog.duckdb",
-        record_root=tmp_path / "oclp" / "records",
-        payload_root=tmp_path / "oclp" / "payloads",
-    ) as publisher:
-        payload = JsonArtifact(name="Bridge payload").handle(
-            publisher.json_artifact(
-                artifact_id=_id("artifact:bridge-payload"),
-                name="Bridge payload",
-                relative_path="bridge-payload.json",
-                value={"rows": 12},
-                created_at=datetime.now(UTC),
-            )
-        )
-
-    with tracker.run("bridge test"):
-        run_id = tracker.active_run_id()
-        tracker.attach_execution(
-            execution=execution,
-            computation=computation,
-            inputs={},
-            outputs={},
-            artifacts={"report": payload},
-        )
-
-    from mlflow.tracking import MlflowClient
-
-    client = MlflowClient(tracking_uri=settings.tracking_uri)
-    run = client.get_run(run_id)
-    assert run.data.tags["oclp.execution.id"] == execution.id
-    assert run.data.tags["oclp.computation.id"] == computation.id
-    mirrored = Path(
-        client.download_artifacts(
-            run_id,
-            "oclp/outputs/report/bridge-payload.json",
-            dst_path=str(tmp_path / "download"),
-        )
-    )
-    assert mirrored.read_text() == payload.path.read_text()
-
-
 def test_quality_checked_computations_declare_required_evidence_evaluators() -> None:
     evaluation = computation_template(evaluate_folds)
     scoring = computation_template(score_holdout)
@@ -481,11 +430,3 @@ def _source_rows(count: int) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
-
-
-def _reference(identifier: str) -> RecordReference:
-    return RecordReference(id=_id(identifier))
-
-
-def _id(name: str) -> str:
-    return str(uuid5(NAMESPACE_URL, f"test:bike-demand:{name}"))

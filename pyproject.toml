@@ -49,6 +49,9 @@ xml = [
 lightgbm = [
   "lightgbm>=4.0,<5",
 ]
+mlflow = [
+  "mlflow>=3.0,<4",
+]
 
 [project.scripts]
 oclp = "oclp.cli:main"

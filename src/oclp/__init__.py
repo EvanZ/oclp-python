@@ -77,6 +77,7 @@ from oclp.evidence import (
     evidence_implementation,
     evidence_template,
 )
+from oclp.mlflow import MlflowAdapter, MlflowModelRegistration
 from oclp.models import (
     Artifact,
     ArtifactSet,
@@ -97,6 +98,7 @@ from oclp.models import (
 from oclp.runtime import (
     ArtifactSetHandle,
     OclpRun,
+    RunAdapter,
     RunArtifactSet,
     RunTemplate,
     active_run,
@@ -150,6 +152,8 @@ __all__ = [
     "JsonMappingAdapter",
     "LightGBMModelAdapter",
     "LightGBMModelArtifact",
+    "MlflowAdapter",
+    "MlflowModelRegistration",
     "NpyArrayAdapter",
     "NpyArtifact",
     "NpzArrayArchiveAdapter",
@@ -172,6 +176,7 @@ __all__ = [
     "OpaqueSource",
     "OclpRun",
     "RunArtifactSet",
+    "RunAdapter",
     "RunTemplate",
     "PandasArrowIpcAdapter",
     "PandasCsvAdapter",
