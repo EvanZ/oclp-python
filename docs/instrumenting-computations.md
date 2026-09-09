@@ -598,34 +598,46 @@ def respond() -> dict[str, object]:
     return {"response": {"response_id": output_artifact_id("response")}}
 ```
 
-### Declare a run-level release ArtifactSet
+### Declare a release ArtifactSet across Computations
 
-Use `RunArtifactSet` on the real `@run` workflow when a release combines
-already-materialized outputs from several child Computations. The declaration
-is resolved at successful `observe_run(...)` completion. No release function,
-Computation, Execution, or Event is fabricated.
+Use `@artifact_set` outside each real `@computation` that contributes to a
+release. Matching names are resolved at successful observed-context completion.
+No release function, Computation, Execution, or Event is fabricated.
 
 ```python
-from oclp import RunArtifactSet, observe_run, run
+from oclp import artifact_set, observe_run, run
+
+
+@artifact_set(
+    name="Validated candidate model release",
+    output_port="model",
+    role="model",
+)
+@computation(...)
+def train_model(...): ...
+
+
+@artifact_set(
+    name="Validated candidate model release",
+    output_port="evaluation",
+    member_name="evaluation",
+    role="validation-report",
+)
+@computation(...)
+def evaluate_candidate(...): ...
+
+
+@artifact_set(
+    name="Validated candidate model release",
+    output_port="features",
+    role="training-data",
+)
+@computation(...)
+def prepare_features(...): ...
 
 
 @run(
     name="Candidate training",
-    artifact_sets=(
-        RunArtifactSet(
-            name="Validated candidate model release",
-            members={
-                "model": (train_model.output("model"), "model"),
-                "evaluation": (
-                    evaluate_candidate.output("evaluation"),
-                    "validation-report",
-                ),
-                "features": (prepare_features.output("features"), "training-data"),
-            },
-            materialize_manifest=True,
-            manifest_name="Validated candidate release manifest",
-        ),
-    ),
 )
 def train_candidate() -> None:
     prepared = prepare_features(...)
@@ -639,11 +651,11 @@ with observe_run(train_candidate, publisher=publisher, source=source) as observe
 model_release = observed.artifact_set("Validated candidate model release")
 ```
 
-Each dictionary key is the stable ArtifactSet member name. Its value is a
-two-item tuple of a declared `ComputationOutput` and an optional semantic role.
-The SDK requires that every referenced output is materialized exactly once in
-the successful run. It fails when a required member is absent or ambiguous;
-it does not attempt cross-process aggregation or invent a selection policy.
+Each `output_port` is the ArtifactSet member name by default; use
+`member_name` only where two contributions would otherwise collide. The SDK
+requires each declared member to materialize exactly once in the successful
+run. It fails when a member is ambiguous; it does not attempt cross-process
+aggregation or invent a selection policy.
 
 ### Publish a dynamic ArtifactSet from exact handles
 

@@ -183,26 +183,8 @@ bootstrap-only observer:
 ```python
 @run(
     name="Bike demand model training",
-    artifact_sets=(...),
     adapters=(
-        MlflowAdapter(
-            experiment_name="oclp-bike-demand-service",
-            metric_outputs=(
-                MlflowMetricOutput(
-                    output=train_fold.output("metrics"),
-                    prefix="temporal-fold",
-                    dimensions=("fold_number",),
-                ),
-                MlflowMetricOutput(
-                    output=evaluate_folds.output("evaluation"),
-                    prefix="candidate",
-                ),
-                MlflowMetricOutput(
-                    output=score_holdout.output("metrics"),
-                    prefix="holdout",
-                ),
-            ),
-        ),
+        MlflowAdapter(experiment_name="oclp-bike-demand-service"),
     ),
     required_evidence_policy="raise",
 )
@@ -315,19 +297,18 @@ opens one MLflow run for the OCLP run, logs canonical record JSON and UUID
 cross-links, mirrors typed Execution parameters and numeric Evidence details,
 and uploads model payloads by default. Repeated fold parameters are scoped by
 their exact Execution UUID because MLflow itself does not allow a parameter
-value to change in one run. Its `metric_outputs` declaration also extracts the
-numeric fields of the selected fold, candidate-evaluation, and holdout JSON
-Artifacts. The runner does not retrieve OCLP references merely to make MLflow
-work.
+value to change in one run. Computation-local `@mlflow` declarations extract
+numeric fields from the fold, candidate-evaluation, and holdout JSON Artifacts.
+The runner does not retrieve OCLP references merely to make MLflow work.
 
-`MlflowMetricOutput.output` is an exact selector for one declared
-Computation output—not a name-based search for any output called `metrics`.
-The `prefix` makes the MLflow keys readable. For repeated `train_fold`
-Executions, `dimensions=("fold_number",)` adds the declared Execution
-parameter to the key, producing names such as
-`temporal-fold.fold_number-2.rmse` and preventing MLflow's immutable metric
-namespace from conflating folds. Candidate evaluation and holdout scoring run
-once, so their selections need no dimensions.
+`@mlflow` uses exact local output ports—not a name-based search for any
+output called `metrics`. The `prefix` makes the MLflow keys readable. For
+repeated `train_fold` Executions, the declaration
+`MlflowMetrics(output_port="metrics", prefix="temporal-fold",
+dimensions=("fold_number",))` adds the declared Execution parameter to the
+key, producing names such as `temporal-fold.fold_number-2.rmse` and preventing
+MLflow's immutable metric namespace from conflating folds. Candidate evaluation
+and holdout scoring run once, so their declarations need no dimensions.
 
 Each mirrored model lives below its exact Artifact UUID in MLflow. This keeps
 the three temporal-fold models distinct even though they share the same
@@ -354,10 +335,11 @@ Here `MlflowAdapter` is a lookup type, not a newly constructed adapter. The
 runtime returns the one active adapter instance configured for this observed
 run, and rejects an absent or ambiguous match.
 
-Non-model payloads remain in OCLP unless the application explicitly selects
-their display names in `payload_artifacts`. This avoids silently copying large
-datasets. MLflow failures produce an `adapter-failed` OCLP Event with a
-Diagnostic by default; `strict=True` makes mirroring fail the application run.
+Non-model payloads remain in OCLP unless the owning Computation explicitly
+selects output ports with `@mlflow(payloads=("report",))`. This avoids silently
+copying large datasets. MLflow failures produce an `adapter-failed` OCLP Event
+with a Diagnostic by default; `strict=True` makes mirroring fail the
+application run.
 
 The workflow’s `required_evidence_policy="raise"` is separate from the MLflow
 adapter. A failed temporal-quality or holdout Evidence gate still produces its

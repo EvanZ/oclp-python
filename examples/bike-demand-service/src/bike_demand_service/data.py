@@ -9,6 +9,7 @@ from oclp import (
     ArtifactHandle,
     CsvArtifact,
     JsonArtifact,
+    artifact_set,
     computation,
     csv_artifact,
     json_artifact,
@@ -120,6 +121,13 @@ def download_source_artifact(
     return downloaders[storage_format](dataset_id)
 
 
+@artifact_set(
+    name="Bike demand CatBoost release",
+    members={
+        "features": ("features", "training-data"),
+        "feature-contract": ("feature_contract", "serving-contract"),
+    },
+)
 @computation(
     name="Prepare bike demand features",
     inputs={

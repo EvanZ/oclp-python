@@ -11,10 +11,13 @@ from oclp import (
     CatBoostModelArtifact,
     CsvArtifact,
     JsonArtifact,
+    MlflowMetrics,
+    artifact_set,
     computation,
     evidence,
     json_artifact,
     many,
+    mlflow,
 )
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
@@ -89,6 +92,15 @@ def create_training_plan(
     }
 
 
+@mlflow(
+    metrics=(
+        MlflowMetrics(
+            output_port="metrics",
+            prefix="temporal-fold",
+            dimensions=("fold_number",),
+        ),
+    ),
+)
 @computation(
     name="Train bike demand fold",
     inputs={
@@ -175,6 +187,14 @@ def _fold_for_number(
     raise ValueError(f"fold definition does not contain fold {fold_number}")
 
 
+@artifact_set(
+    name="Bike demand CatBoost release",
+    members={
+        "temporal-evaluation": ("evaluation", "validation-report"),
+        "training-config": ("training_config", "training-config"),
+    },
+)
+@mlflow(metrics=(MlflowMetrics(output_port="evaluation", prefix="candidate"),))
 @computation(
     name="Evaluate bike demand candidate",
     inputs={"fold_predictions": many(CsvArtifact)},
@@ -206,6 +226,11 @@ def evaluate_folds(
     }
 
 
+@artifact_set(
+    name="Bike demand CatBoost release",
+    output_port="model",
+    role="model",
+)
 @computation(
     name="Train final bike demand model",
     inputs={
@@ -240,6 +265,7 @@ def train_final_model(
     return model
 
 
+@mlflow(metrics=(MlflowMetrics(output_port="metrics", prefix="holdout"),))
 @computation(
     name="Score bike demand holdout",
     inputs={

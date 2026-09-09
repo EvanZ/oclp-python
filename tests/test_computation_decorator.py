@@ -22,8 +22,8 @@ from oclp import (
     JsonArtifact,
     OclpRun,
     RequiredEvidenceFailedError,
-    RunArtifactSet,
     active_run,
+    artifact_set,
     artifact_set_input,
     computation,
     computation_input_artifact_types,
@@ -87,6 +87,11 @@ def normalize_report_run(source: str) -> str:
     return normalize_report(source)
 
 
+@artifact_set(
+    name="Validated release",
+    output_port="configuration",
+    role="config",
+)
 @computation(
     name="Publish release configuration",
     outputs={"configuration": JsonArtifact(name="Release configuration")},
@@ -95,6 +100,11 @@ def declared_release_configuration() -> dict[str, str]:
     return {"dataset": "hourly-bike-data"}
 
 
+@artifact_set(
+    name="Validated release",
+    output_port="evaluation",
+    role="validation-report",
+)
 @computation(
     name="Publish release evaluation",
     outputs={"evaluation": JsonArtifact(name="Release evaluation")},
@@ -125,25 +135,34 @@ def one_computation_release() -> dict[str, dict[str, object]]:
     }
 
 
+@artifact_set(
+    name="Declared multi-output release",
+    members={
+        "configuration": ("configuration", "config"),
+        "evaluation": ("evaluation", "validation-report"),
+    },
+)
+@computation(
+    name="Publish declared multi-output release",
+    outputs={
+        "configuration": JsonArtifact(name="Declared configuration"),
+        "evaluation": JsonArtifact(name="Declared evaluation"),
+    },
+)
+def declared_multi_output_release() -> dict[str, dict[str, object]]:
+    return {
+        "configuration": {"dataset": "hourly-bike-data"},
+        "evaluation": {"rmse": 0.2},
+    }
+
+
+@run(name="Declared multi-output release")
+def declared_multi_output_release_run() -> None:
+    declared_multi_output_release()
+
+
 @run(
     name="Declared release",
-    artifact_sets=(
-        RunArtifactSet(
-            name="Validated release",
-            members={
-                "configuration": (
-                    declared_release_configuration.output("configuration"),
-                    "config",
-                ),
-                "evaluation": (
-                    declared_release_evaluation.output("evaluation"),
-                    "validation-report",
-                ),
-            },
-            materialize_manifest=True,
-            manifest_name="Validated release manifest",
-        ),
-    ),
 )
 def declared_release_run() -> None:
     declared_release_configuration()
@@ -151,40 +170,63 @@ def declared_release_run() -> None:
 
 
 @run(
-    name="Missing declared release member",
-    artifact_sets=(
-        RunArtifactSet(
-            name="Missing release",
-            members={
-                "configuration": (
-                    declared_release_configuration.output("configuration"),
-                    "config",
-                ),
-            },
-        ),
-    ),
-)
-def missing_declared_release_member_run() -> None:
-    return None
-
-
-@run(
     name="Ambiguous declared release member",
-    artifact_sets=(
-        RunArtifactSet(
-            name="Ambiguous release",
-            members={
-                "configuration": (
-                    declared_release_configuration.output("configuration"),
-                    "config",
-                ),
-            },
-        ),
-    ),
 )
 def ambiguous_declared_release_member_run() -> None:
     declared_release_configuration()
     declared_release_configuration()
+
+
+@artifact_set(
+    name="Metrics release",
+    output_port="metrics",
+    role="training-metrics",
+)
+@computation(
+    name="Publish training metrics",
+    outputs={"metrics": JsonArtifact(name="Training metrics")},
+)
+def publish_training_metrics() -> dict[str, dict[str, float]]:
+    return {"metrics": {"rmse": 0.3}}
+
+
+@artifact_set(
+    name="Metrics release",
+    output_port="metrics",
+    role="secondary-metrics",
+)
+@computation(
+    name="Publish colliding metrics",
+    outputs={"metrics": JsonArtifact(name="Colliding metrics")},
+)
+def publish_colliding_metrics() -> dict[str, dict[str, float]]:
+    return {"metrics": {"rmse": 0.4}}
+
+
+@artifact_set(
+    name="Metrics release",
+    output_port="metrics",
+    member_name="evaluation-metrics",
+    role="validation-metrics",
+)
+@computation(
+    name="Publish evaluation metrics",
+    outputs={"metrics": JsonArtifact(name="Evaluation metrics")},
+)
+def publish_evaluation_metrics() -> dict[str, dict[str, float]]:
+    return {"metrics": {"rmse": 0.2}}
+
+
+@run(name="Metrics release with explicit member names")
+def metrics_release_run() -> None:
+    publish_training_metrics()
+    publish_evaluation_metrics()
+
+
+@run(name="Metrics release with a duplicate member")
+def colliding_metrics_release_run() -> None:
+    publish_training_metrics()
+    publish_colliding_metrics()
 
 
 def test_computation_decorator_keeps_callable_behavior_and_derives_locator() -> None:
@@ -296,7 +338,7 @@ def test_observe_run_derives_one_shared_uuid_profile_for_real_executions(
     assert execution.name == "Normalize report"
 
 
-def test_observe_run_publishes_declared_cross_computation_artifact_set(
+def test_observe_run_publishes_decorated_cross_computation_artifact_set(
     tmp_path,
 ) -> None:
     source = GitSource(
@@ -317,9 +359,6 @@ def test_observe_run_publishes_declared_cross_computation_artifact_set(
         release = observed.artifact_set("Validated release")
         records = publisher.records()
 
-    assert run_template(declared_release_run).artifact_sets[0].name == (
-        "Validated release"
-    )
     assert [member.name for member in release.artifact_set.members] == [
         "configuration",
         "evaluation",
@@ -329,7 +368,7 @@ def test_observe_run_publishes_declared_cross_computation_artifact_set(
         "validation-report",
     ]
     assert release.manifest is not None
-    assert release.manifest.artifact.name == "Validated release manifest"
+    assert release.manifest.artifact.name == "Validated release"
     assert not any(
         isinstance(record, Execution)
         and record.name in {"Validated release", "Declared release"}
@@ -338,28 +377,7 @@ def test_observe_run_publishes_declared_cross_computation_artifact_set(
     validate_derivation_graph(records)
 
 
-def test_declared_artifact_set_fails_when_a_required_output_is_missing(
-    tmp_path,
-) -> None:
-    source = GitSource(
-        repository="https://github.com/example/reports.git",
-        commit="a" * 40,
-    )
-    with LocalArtifactPublisher(
-        catalog_path=tmp_path / "records" / "catalog.duckdb",
-        record_root=tmp_path / "records",
-        payload_root=tmp_path / "payloads",
-    ) as publisher:
-        with pytest.raises(ValueError, match="was not materialized"):
-            with observe_run(
-                missing_declared_release_member_run,
-                publisher=publisher,
-                source=source,
-            ):
-                missing_declared_release_member_run()
-
-
-def test_declared_artifact_set_fails_when_an_output_is_ambiguous(tmp_path) -> None:
+def test_decorated_artifact_set_fails_when_an_output_is_ambiguous(tmp_path) -> None:
     source = GitSource(
         repository="https://github.com/example/reports.git",
         commit="a" * 40,
@@ -376,6 +394,99 @@ def test_declared_artifact_set_fails_when_an_output_is_ambiguous(tmp_path) -> No
                 source=source,
             ):
                 ambiguous_declared_release_member_run()
+
+
+def test_artifact_set_can_declare_several_outputs_from_one_computation(
+    tmp_path,
+) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            declared_multi_output_release_run,
+            publisher=publisher,
+            source=source,
+        ) as observed:
+            declared_multi_output_release_run()
+        release = observed.artifact_set("Declared multi-output release")
+
+    assert [member.name for member in release.artifact_set.members] == [
+        "configuration",
+        "evaluation",
+    ]
+    assert [member.role for member in release.artifact_set.members] == [
+        "config",
+        "validation-report",
+    ]
+
+
+def test_decorated_artifact_set_uses_member_name_to_disambiguate_ports(
+    tmp_path,
+) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            metrics_release_run,
+            publisher=publisher,
+            source=source,
+        ) as observed:
+            metrics_release_run()
+        release = observed.artifact_set("Metrics release")
+
+    assert [member.name for member in release.artifact_set.members] == [
+        "metrics",
+        "evaluation-metrics",
+    ]
+    assert [member.role for member in release.artifact_set.members] == [
+        "training-metrics",
+        "validation-metrics",
+    ]
+
+
+def test_decorated_artifact_set_rejects_duplicate_default_member_names(
+    tmp_path,
+) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with pytest.raises(ValueError, match="member 'metrics' is ambiguous"):
+            with observe_run(
+                colliding_metrics_release_run,
+                publisher=publisher,
+                source=source,
+            ):
+                colliding_metrics_release_run()
+
+
+def test_artifact_set_rejects_an_unknown_output_port() -> None:
+    with pytest.raises(ValueError, match="has no persisted output port 'missing'"):
+
+        @artifact_set(name="Invalid release", output_port="missing")
+        @computation(
+            name="Publish valid output",
+            outputs={"result": JsonArtifact(name="Valid result")},
+        )
+        def publish_valid_output() -> dict[str, dict[str, bool]]:
+            return {"result": {"ok": True}}
 
 
 def test_computation_can_publish_one_artifact_set_output(tmp_path) -> None:

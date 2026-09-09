@@ -31,14 +31,14 @@ from oclp.artifacts import (
 )
 from oclp.canonical import canonical_json_bytes
 from oclp.computations import (
+    ArtifactSetDeclaration,
     ArtifactSetInput,
     ComputationArtifactSet,
-    ComputationOutput,
     ComputationTemplate,
     ManyArtifacts,
+    artifact_set_declarations,
     computation_input_artifact_types,
     computation_record,
-    computation_template,
 )
 from oclp.evidence import evaluate_evidence, evidence_template
 from oclp.models import (
@@ -120,56 +120,6 @@ class RequiredEvidenceFailedError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class RunArtifactSet:
-    """Static declaration of one ArtifactSet assembled at run completion.
-
-    Member references identify persisted outputs of child Computation callables.
-    They are resolved only after the real ``@run`` workflow completes
-    successfully, so the published collection contains exact UUID references
-    without adding a synthetic release Computation, Execution, or Event.
-    """
-
-    name: str
-    members: Mapping[str, tuple[ComputationOutput, str | None]]
-    materialize_manifest: bool = False
-    manifest_name: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("ArtifactSet names must be non-empty strings")
-        if not self.members:
-            raise ValueError("ArtifactSets require at least one member")
-        normalized_members = dict(self.members)
-        for member_name, declaration in normalized_members.items():
-            if not isinstance(member_name, str) or not member_name:
-                raise ValueError("ArtifactSet member names must be non-empty strings")
-            if not isinstance(declaration, tuple) or len(declaration) != 2:
-                raise TypeError(
-                    "run ArtifactSet members must be "
-                    "(ComputationOutput, optional role) tuples"
-                )
-            output, role = declaration
-            if not isinstance(output, ComputationOutput):
-                raise TypeError(
-                    "run ArtifactSet members must refer to Computation outputs"
-                )
-            if role is not None and (not isinstance(role, str) or not role):
-                raise ValueError("ArtifactSet member roles must be non-empty strings")
-        if self.materialize_manifest and (
-            not isinstance(self.manifest_name, str) or not self.manifest_name
-        ):
-            raise ValueError(
-                "materialized ArtifactSets require an application-supplied "
-                "manifest_name"
-            )
-        if not self.materialize_manifest and self.manifest_name is not None:
-            raise ValueError(
-                "manifest_name is only valid when materialize_manifest=True"
-            )
-        object.__setattr__(self, "members", normalized_members)
-
-
-@dataclass(frozen=True)
 class RunTemplate:
     """Static SDK declaration for one application-owned run workflow.
 
@@ -180,14 +130,10 @@ class RunTemplate:
     """
 
     name: str
-    artifact_sets: tuple[RunArtifactSet, ...] = ()
     adapters: tuple[RunAdapter, ...] = ()
     required_evidence_policy: RequiredEvidencePolicy = "continue"
 
     def __post_init__(self) -> None:
-        names = [artifact_set.name for artifact_set in self.artifact_sets]
-        if len(names) != len(set(names)):
-            raise ValueError("run ArtifactSet names must be unique")
         if self.required_evidence_policy not in {"continue", "raise"}:
             raise ValueError(
                 "required_evidence_policy must be either 'continue' or 'raise'"
@@ -208,7 +154,6 @@ class RunTemplate:
 def run(
     *,
     name: str,
-    artifact_sets: tuple[RunArtifactSet, ...] = (),
     adapters: tuple[RunAdapter, ...] = (),
     required_evidence_policy: RequiredEvidencePolicy = "continue",
 ) -> Callable[[CallableT], CallableT]:
@@ -218,10 +163,10 @@ def run(
     Pair it with :func:`observe_run` at the application bootstrap point to
     configure a publisher and source basis. The SDK generates a UUID for the
     concrete run and derives the shared ``profiles.run`` binding for every real
-    Execution produced by decorated calls inside the workflow. Optional
-    ``artifact_sets`` declare immutable run-level collections assembled from
-    exact child Computation outputs after successful completion.
-    ``adapters`` are optional SDK integrations, such as an MLflow mirror.
+    Execution produced by decorated calls inside the workflow. Computation-local
+    :func:`oclp.artifact_set` declarations are assembled automatically from
+    exact child Computation outputs after successful completion. ``adapters``
+    are optional SDK integrations, such as an MLflow mirror.
     ``required_evidence_policy='raise'`` stops the workflow after a real
     Execution publishes non-passing required Evidence; ``'continue'``
     preserves the default behavior of recording the failed Execution while
@@ -230,15 +175,10 @@ def run(
 
     if not isinstance(name, str) or not name:
         raise ValueError("OCLP run names must be non-empty strings")
-    if not isinstance(artifact_sets, tuple) or not all(
-        isinstance(artifact_set, RunArtifactSet) for artifact_set in artifact_sets
-    ):
-        raise TypeError("run artifact_sets must be a tuple of RunArtifactSet values")
     if not isinstance(adapters, tuple):
         raise TypeError("run adapters must be a tuple")
     template = RunTemplate(
         name=name,
-        artifact_sets=artifact_sets,
         adapters=adapters,
         required_evidence_policy=required_evidence_policy,
     )
@@ -330,19 +270,13 @@ def observe_run(
         parent_execution=parent_execution,
         profiles=merged_profiles,
         artifact_adapters=artifact_adapters,
-        declared_artifact_sets=template.artifact_sets,
         adapters=active_adapters,
         run_name=template.name,
         required_evidence_policy=template.required_evidence_policy,
     )
     observed.run_id = concrete_run_id
     with observed:
-        try:
-            yield observed
-        except BaseException:
-            raise
-        else:
-            observed.publish_declared_artifact_sets()
+        yield observed
 
 
 def _adapter_instance(adapter: RunAdapter) -> RunAdapter:
@@ -374,6 +308,15 @@ class _ExecutionBinding:
     value: object
     execution: RecordReference
     evidence: tuple[Evidence, ...]
+
+
+@dataclass(frozen=True)
+class _DecoratedArtifactSetMember:
+    """One exact Artifact emitted for a local ``@artifact_set`` declaration."""
+
+    declaration: ArtifactSetDeclaration
+    artifact: ArtifactHandle
+    execution: RecordReference
 
 
 @dataclass(frozen=True)
@@ -431,7 +374,6 @@ class OclpRun:
     parent_execution: RecordReference | None = None
     profiles: ProfileBindings | None = None
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS
-    declared_artifact_sets: tuple[RunArtifactSet, ...] = ()
     adapters: tuple[RunAdapter, ...] = ()
     run_name: str | None = None
     required_evidence_policy: RequiredEvidencePolicy = "continue"
@@ -456,10 +398,10 @@ class OclpRun:
     _computations: dict[Callable[..., object], tuple[Computation, RecordReference]] = (
         field(default_factory=dict, init=False, repr=False)
     )
-    _function_outputs: dict[
-        Callable[..., object], list[tuple[RecordReference, dict[str, ArtifactHandle]]]
+    _decorated_artifact_set_members: dict[
+        str, list[_DecoratedArtifactSetMember]
     ] = field(default_factory=lambda: defaultdict(list), init=False, repr=False)
-    _declared_artifact_sets: dict[str, ArtifactSetHandle] = field(
+    _published_artifact_sets: dict[str, ArtifactSetHandle] = field(
         default_factory=dict, init=False, repr=False
     )
     _pending_adapter_diagnostics: list[Diagnostic] = field(
@@ -489,11 +431,18 @@ class OclpRun:
         _traceback: object,
     ) -> None:
         assert self._token is not None
+        completion_error = error
         try:
+            if error is None:
+                try:
+                    self.publish_decorated_artifact_sets()
+                except BaseException as publication_error:
+                    completion_error = publication_error
+                    raise
             self._notify_adapters(
                 "on_run_end",
                 self,
-                error,
+                completion_error,
                 related_execution=self._last_execution,
             )
         finally:
@@ -567,18 +516,18 @@ class OclpRun:
         )
 
     def artifact_set(self, name: str) -> ArtifactSetHandle:
-        """Return one ArtifactSet published from this run's declaration.
+        """Return one ArtifactSet assembled from this run's local declarations.
 
-        Declared ArtifactSets become available after the surrounding
-        :func:`observe_run` context has completed successfully.
+        Decorated ArtifactSets become available after the surrounding observed
+        run has completed successfully.
         """
 
         try:
-            return self._declared_artifact_sets[name]
+            return self._published_artifact_sets[name]
         except KeyError as error:
-            available = ", ".join(sorted(self._declared_artifact_sets)) or "none"
+            available = ", ".join(sorted(self._published_artifact_sets)) or "none"
             raise KeyError(
-                f"this OCLP run has no published declared ArtifactSet {name!r}; "
+                f"this OCLP run has no published ArtifactSet {name!r}; "
                 f"available sets: {available}"
             ) from error
 
@@ -600,41 +549,57 @@ class OclpRun:
             )
         return matches[0]
 
-    def publish_declared_artifact_sets(self) -> None:
-        """Resolve and publish the successful run's declared ArtifactSets."""
+    def publish_decorated_artifact_sets(self) -> None:
+        """Assemble exact local ``@artifact_set`` outputs after success."""
 
-        if self._declared_artifact_sets:
+        if self._published_artifact_sets:
             return
-        for declaration in self.declared_artifact_sets:
+        resolved_sets: dict[str, dict[str, tuple[ArtifactHandle, str | None]]] = {}
+        for name, contributions in self._decorated_artifact_set_members.items():
+            grouped: dict[str, list[_DecoratedArtifactSetMember]] = defaultdict(list)
+            for contribution in contributions:
+                grouped[contribution.declaration.resolved_member_name].append(
+                    contribution
+                )
             members: dict[str, tuple[ArtifactHandle, str | None]] = {}
-            for member_name, (output, role) in declaration.members.items():
-                observed = self._function_outputs.get(output.function, ())
-                matches = [
-                    (execution, outputs[output.port])
-                    for execution, outputs in observed
-                    if output.port in outputs
-                ]
-                if not matches:
-                    template = computation_template(output.function)
-                    raise ValueError(
-                        f"run ArtifactSet {declaration.name!r} member {member_name!r} "
-                        f"requires output {output.port!r} from Computation "
-                        f"{template.name!r}, but that output was not materialized"
-                    )
+            for member_name, matches in grouped.items():
                 if len(matches) != 1:
-                    execution_ids = ", ".join(execution.id for execution, _ in matches)
-                    template = computation_template(output.function)
-                    raise ValueError(
-                        f"run ArtifactSet {declaration.name!r} member {member_name!r} "
-                        f"is ambiguous: Computation {template.name!r} emitted output "
-                        f"{output.port!r} {len(matches)} times ({execution_ids})"
+                    execution_ids = ", ".join(
+                        match.execution.id for match in matches
                     )
-                members[member_name] = (matches[0][1], role)
-            self._declared_artifact_sets[declaration.name] = self.publish_artifact_set(
-                name=declaration.name,
+                    raise ValueError(
+                        f"ArtifactSet {name!r} member {member_name!r} is ambiguous: "
+                        f"it was materialized {len(matches)} times "
+                        f"({execution_ids}); use member_name to disambiguate "
+                        "distinct contributions"
+                    )
+                match = matches[0]
+                members[member_name] = (match.artifact, match.declaration.role)
+            resolved_sets[name] = members
+        for name, members in resolved_sets.items():
+            self._published_artifact_sets[name] = self.publish_artifact_set(
+                name=name,
                 members=members,
-                materialize_manifest=declaration.materialize_manifest,
-                manifest_name=declaration.manifest_name,
+                materialize_manifest=True,
+                manifest_name=name,
+            )
+
+    def _register_decorated_artifact_set_members(
+        self,
+        *,
+        function: Callable[..., object],
+        execution: RecordReference,
+        outputs: Mapping[str, ArtifactHandle],
+    ) -> None:
+        """Capture this invocation's exact output handles for run completion."""
+
+        for declaration in artifact_set_declarations(function):
+            self._decorated_artifact_set_members[declaration.name].append(
+                _DecoratedArtifactSetMember(
+                    declaration=declaration,
+                    artifact=outputs[declaration.output_port],
+                    execution=execution,
+                )
             )
 
     def artifact_for(
@@ -888,6 +853,12 @@ class OclpRun:
             computation = computation_record(function, source=self.source)
             computation_ref = self.publisher.publish(computation)
             self._computations[function] = (computation, computation_ref)
+            self._notify_adapters(
+                "on_computation",
+                self,
+                computation=computation,
+                function=function,
+            )
         else:
             computation, computation_ref = materialized
         started_at = utc_now()
@@ -1029,7 +1000,11 @@ class OclpRun:
         self._execution_outputs[execution_ref.id] = output_handles
         if artifact_set_outputs:
             self._execution_artifact_sets[execution_ref.id] = artifact_set_outputs
-        self._function_outputs[function].append((execution_ref, output_handles))
+        self._register_decorated_artifact_set_members(
+            function=function,
+            execution=execution_ref,
+            outputs=output_handles,
+        )
         self._execution_bindings[id(result)] = _ExecutionBinding(
             value=result,
             execution=execution_ref,

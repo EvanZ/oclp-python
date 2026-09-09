@@ -8,9 +8,7 @@ from pathlib import Path
 
 from oclp import (
     MlflowAdapter,
-    MlflowMetricOutput,
     OclpRun,
-    RunArtifactSet,
     capture_git_source_overlay,
     load_release_manifest,
     observe_run,
@@ -85,51 +83,8 @@ class _ReleaseSmokeTestResult:
 
 @run(
     name="Bike demand model training",
-    artifact_sets=(
-        RunArtifactSet(
-            name="Bike demand CatBoost release",
-            members={
-                "model": (train_final_model.output("model"), "model"),
-                "feature-contract": (
-                    prepare_features.output("feature_contract"),
-                    "serving-contract",
-                ),
-                "temporal-evaluation": (
-                    evaluate_folds.output("evaluation"),
-                    "validation-report",
-                ),
-                "training-config": (
-                    evaluate_folds.output("training_config"),
-                    "training-config",
-                ),
-                "feature-table": (
-                    prepare_features.output("features"),
-                    "training-data",
-                ),
-            },
-            materialize_manifest=True,
-            manifest_name="Bike demand release manifest",
-        ),
-    ),
     adapters=(
-        MlflowAdapter(
-            experiment_name=_MLFLOW_EXPERIMENT_NAME,
-            metric_outputs=(
-                MlflowMetricOutput(
-                    output=train_fold.output("metrics"),
-                    prefix="temporal-fold",
-                    dimensions=("fold_number",),
-                ),
-                MlflowMetricOutput(
-                    output=evaluate_folds.output("evaluation"),
-                    prefix="candidate",
-                ),
-                MlflowMetricOutput(
-                    output=score_holdout.output("metrics"),
-                    prefix="holdout",
-                ),
-            ),
-        ),
+        MlflowAdapter(experiment_name=_MLFLOW_EXPERIMENT_NAME),
     ),
     required_evidence_policy="raise",
 )

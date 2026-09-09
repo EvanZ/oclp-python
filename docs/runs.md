@@ -7,22 +7,35 @@ binding to every real Execution observed inside that context. Optional SDK
 integration adapters may mirror those already-published records elsewhere.
 
 ```python
-from oclp import MlflowAdapter, RunArtifactSet, observe_run, run
+from oclp import MlflowAdapter, artifact_set, observe_run, run
+
+
+@artifact_set(
+    name="Demand model release",
+    output_port="features",
+    role="training-data",
+)
+@computation(
+    name="Prepare features",
+    outputs={"features": CsvArtifact(name="Demand features")},
+)
+def prepare_features(source, *, fold_count): ...
+
+
+@artifact_set(
+    name="Demand model release",
+    output_port="model",
+    role="model",
+)
+@computation(
+    name="Train model",
+    outputs={"model": CatBoostModelArtifact(name="Demand model")},
+)
+def train_model(features): ...
 
 
 @run(
     name="Daily demand model training",
-    artifact_sets=(
-        RunArtifactSet(
-            name="Demand model release",
-            members={
-                "model": (train_model.output("model"), "model"),
-                "features": (prepare_features.output("features"), "training-data"),
-            },
-            materialize_manifest=True,
-            manifest_name="Demand model release manifest",
-        ),
-    ),
     adapters=(MlflowAdapter(experiment_name="daily-training"),),
 )
 def train_demand_model(*, fold_count: int):
@@ -87,15 +100,19 @@ adapter: zero or multiple matches raise a clear error rather than silently
 choosing one. Use this escape hatch only for application-selected integration
 context. Automatic OCLP record and payload mirroring stays inside the adapter.
 
-`RunArtifactSet` declarations are resolved only when the `observe_run(...)`
-context completes successfully. Each member references a persisted output port
-on a real `@computation` callable via `.output("port")`; the SDK resolves it
-to the one exact Artifact emitted in that run. A missing member or a callable
-that emitted the referenced port more than once fails clearly rather than
-guessing. The direct collection publication creates no synthetic Computation,
-Execution, or Event.
+`@artifact_set` declarations are resolved only when an observed context
+completes successfully. Each declaration is attached to the Computation that
+emits its output, and declarations with the same `name` become one exact
+ArtifactSet. Use `members={"label": ("output_port", "role")}` to declare
+several outputs from one Computation together. An output port becomes the
+member name in the concise one-output form; use `member_name=` only where a
+single-output declaration needs a different label. A member materialized more
+than once fails clearly rather than guessing. The direct collection publication
+creates no synthetic Computation, Execution, or Event.
 
-Use this for a run-local release assembled from child Computations. Keep
+Use this for a run-local release assembled from child Computations. The SDK
+automatically creates a durable package representation with the same `name`.
+Keep
 `observed.publish_artifact_set(...)` for genuinely dynamic collections whose
 members cannot be declared before the workflow runs.
 
@@ -123,45 +140,53 @@ and published the failed terminal Execution, it raises
 reference and the complete tuple of Evidence outcomes. This is SDK workflow
 control flow, not a new Core record or a replacement for Evidence.
 
-### MLflow metric outputs
+### MLflow projection policy
 
 `MlflowAdapter` can project numeric fields from explicitly selected JSON
 Computation outputs. This avoids application calls to `log_metrics()` for
-ordinary model-comparison outputs while keeping the selection in the MLflow
-integration declaration:
+ordinary model-comparison outputs while keeping the selection with the
+Computation that owns the output:
 
 ```python
-from oclp import MlflowAdapter, MlflowMetricOutput
+from oclp import JsonArtifact, MlflowAdapter, MlflowMetrics, computation, mlflow
 
 @run(
     name="Daily demand model training",
     adapters=(
-        MlflowAdapter(
-            experiment_name="daily-training",
-            metric_outputs=(
-                MlflowMetricOutput(
-                    output=evaluate_candidate.output("metrics"),
-                    prefix="candidate",
-                ),
-                MlflowMetricOutput(
-                    output=train_fold.output("metrics"),
-                    prefix="fold",
-                    dimensions=("fold_number",),
-                ),
-            ),
-        ),
+        MlflowAdapter(experiment_name="daily-training"),
     ),
 )
 def train_demand_model(...): ...
+
+@mlflow(
+    metrics=(
+        MlflowMetrics(
+            output_port="metrics",
+            prefix="fold",
+            dimensions=("fold_number",),
+        ),
+    ),
+)
+@computation(
+    name="Train fold",
+    outputs={"metrics": JsonArtifact(name="Fold metrics")},
+)
+def train_fold(*, fold_number: int) -> dict[str, object]: ...
 ```
 
-Each declaration targets one exact decorated output, rather than guessing from
-an output named `"metrics"`. The adapter reads the verified persisted JSON
-Artifact and exports only top-level numeric scalar fields. `dimensions` add
-declared scalar Execution parameters to the MLflow key—for example,
-`fold.fold_number-2.rmse`. Repeated selected calls without distinct dimensions
-are rejected rather than silently colliding. No output is selected by default,
-and this remains an MLflow projection rather than a Core OCLP `Metric` type.
+`@computation` must be closest to the function. `@mlflow` and `@artifact_set`
+must be outside it so they can validate declared output ports; when both are
+present, either may be the outermost decorator. Each MLflow declaration targets
+one local output port, rather than guessing from an output named `"metrics"`.
+The adapter reads the verified persisted JSON Artifact and exports only
+top-level numeric scalar fields.
+`dimensions` add declared scalar Execution parameters to the MLflow key—for
+example, `fold.fold_number-2.rmse`. Repeated selected calls without distinct
+dimensions are rejected rather than silently colliding. No output is selected
+by default, and this remains an MLflow projection rather than a Core OCLP
+`Metric` type. The declaration is inert when a run does not include an
+`MlflowAdapter`. Execution parameters already mirror automatically, so they
+do not need an `@mlflow` declaration.
 
 Within one active `OclpRun`, an exact raw value returned from a decorated
 Computation can be supplied directly to another decorated Computation. The SDK

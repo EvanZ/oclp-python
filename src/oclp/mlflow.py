@@ -10,16 +10,19 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from oclp.artifacts import ArtifactHandle
-from oclp.computations import ComputationOutput, computation_template
+from oclp.computations import computation_template
 from oclp.models import ArtifactSet, Computation, Evidence, Execution
 
 if TYPE_CHECKING:
     from oclp.runtime import ArtifactSetHandle, OclpRun
+
+
+_MLFLOW_DECLARATION_ATTRIBUTE = "__oclp_mlflow_declaration__"
 
 
 @dataclass(frozen=True)
@@ -37,22 +40,21 @@ class MlflowModelRegistration:
 
 
 @dataclass(frozen=True)
-class MlflowMetricOutput:
-    """Select numeric fields from one exact JSON Computation output.
+class MlflowMetrics:
+    """Project numeric fields from one declared JSON output into MLflow.
 
-    ``output`` identifies a decorated callable and one of its declared output
-    ports. ``dimensions`` names scalar Execution parameters incorporated into
-    MLflow metric keys, which is necessary when the selected Computation may
-    run more than once in one observed run.
+    ``output_port`` is local to the decorated Computation. ``dimensions``
+    names scalar Execution parameters included in metric keys when that
+    Computation can execute repeatedly in one observed run.
     """
 
-    output: ComputationOutput
+    output_port: str
     prefix: str | None = None
     dimensions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.output, ComputationOutput):
-            raise TypeError("metric output must be a ComputationOutput declaration")
+        if not isinstance(self.output_port, str) or not self.output_port:
+            raise ValueError("metric output_port must be a non-empty string")
         if self.prefix is not None and (
             not isinstance(self.prefix, str) or not self.prefix
         ):
@@ -63,19 +65,99 @@ class MlflowMetricOutput:
             raise TypeError("metric output dimensions must be a tuple of names")
         if len(self.dimensions) != len(set(self.dimensions)):
             raise ValueError("metric output dimensions must be unique")
-        template = computation_template(self.output.function)
-        available = {parameter.name for parameter in template.parameter_definitions}
-        unknown = sorted(set(self.dimensions).difference(available))
-        if unknown:
+
+
+@dataclass(frozen=True)
+class _MlflowDeclaration:
+    """SDK-only MLflow projection metadata attached to one Computation."""
+
+    metrics: tuple[MlflowMetrics, ...]
+    payloads: frozenset[str]
+
+
+def mlflow(
+    *,
+    metrics: tuple[MlflowMetrics, ...] = (),
+    payloads: tuple[str, ...] = (),
+) -> Callable[[Callable[..., object]], Callable[..., object]]:
+    """Declare optional MLflow projections for one ``@computation``.
+
+    Apply this decorator outside ``@computation``. It is inert unless the
+    active ``@run`` includes :class:`MlflowAdapter`; OCLP publication and
+    ordinary calls remain unchanged. Model payloads are mirrored by default.
+    ``payloads`` opts named additional output-port payloads into MLflow.
+    """
+
+    if not isinstance(metrics, tuple) or not all(
+        isinstance(metric, MlflowMetrics) for metric in metrics
+    ):
+        raise TypeError("mlflow metrics must be a tuple of MlflowMetrics")
+    if not isinstance(payloads, tuple) or not all(
+        isinstance(port, str) and port for port in payloads
+    ):
+        raise TypeError("mlflow payloads must be a tuple of non-empty output ports")
+    if len(payloads) != len(set(payloads)):
+        raise ValueError("mlflow payload ports must be unique")
+    metric_ports = [metric.output_port for metric in metrics]
+    if len(metric_ports) != len(set(metric_ports)):
+        raise ValueError("each MLflow metric output port may be selected only once")
+
+    def decorate(function: Callable[..., object]) -> Callable[..., object]:
+        template = computation_template(function)
+        available_outputs = set(template.output_artifacts)
+        unknown_payloads = sorted(set(payloads).difference(available_outputs))
+        if unknown_payloads:
             raise ValueError(
-                "metric output dimensions must name declared Computation "
-                f"parameters; unknown: {', '.join(unknown)}"
+                "MLflow payloads must name declared Computation output ports; "
+                f"unknown: {', '.join(unknown_payloads)}"
             )
-        artifact_type = template.output_artifacts[self.output.port]
-        if artifact_type.media_type != "application/json":
-            raise ValueError(
-                "metric output must select an application/json Artifact output"
+        available_parameters = {
+            parameter.name for parameter in template.parameter_definitions
+        }
+        for metric in metrics:
+            if metric.output_port not in template.output_artifacts:
+                available = ", ".join(sorted(available_outputs)) or "none"
+                raise ValueError(
+                    "MLflow metric output_port must name a declared Computation "
+                    f"output; available: {available}"
+                )
+            artifact_type = template.output_artifacts[metric.output_port]
+            if artifact_type.media_type != "application/json":
+                raise ValueError(
+                    "MLflow metric output must select an application/json Artifact "
+                    "output"
+                )
+            unknown_dimensions = sorted(
+                set(metric.dimensions).difference(available_parameters)
             )
+            if unknown_dimensions:
+                raise ValueError(
+                    "MLflow metric dimensions must name declared Computation "
+                    f"parameters; unknown: {', '.join(unknown_dimensions)}"
+                )
+        declaration = _MlflowDeclaration(
+            metrics=metrics,
+            payloads=frozenset(payloads),
+        )
+        observed_function = getattr(function, "__oclp_observed_function__", function)
+        if getattr(function, _MLFLOW_DECLARATION_ATTRIBUTE, None) is not None:
+            raise ValueError("a Computation can have only one @mlflow declaration")
+        setattr(function, _MLFLOW_DECLARATION_ATTRIBUTE, declaration)
+        setattr(observed_function, _MLFLOW_DECLARATION_ATTRIBUTE, declaration)
+        return function
+
+    return decorate
+
+
+def _mlflow_declaration(function: Callable[..., object]) -> _MlflowDeclaration | None:
+    """Return a valid local MLflow declaration, if the callable has one."""
+
+    declaration = getattr(function, _MLFLOW_DECLARATION_ATTRIBUTE, None)
+    if declaration is None:
+        return None
+    if not isinstance(declaration, _MlflowDeclaration):  # pragma: no cover - guard.
+        raise TypeError("invalid MLflow declaration attached to Computation")
+    return declaration
 
 
 @dataclass
@@ -83,18 +165,16 @@ class MlflowAdapter:
     """Mirror an observed OCLP run into one optional MLflow run.
 
     Canonical OCLP records are logged as JSON. Model payloads are copied by
-    default; other payloads are copied only when their semantic artifact name
-    appears in ``payload_artifacts``.  Set ``strict=True`` when a mirror
-    failure must fail the application workflow.  The default lets OCLP
-    publication finish and asks :class:`~oclp.runtime.OclpRun` to publish an
-    ``adapter-failed`` Event with a Diagnostic on the next real Execution.
+    default; each ``@mlflow`` Computation declaration can opt its own
+    additional output payloads and metric projections in. Set ``strict=True``
+    when a mirror failure must fail the application workflow. The default lets
+    OCLP publication finish and asks :class:`~oclp.runtime.OclpRun` to publish
+    an ``adapter-failed`` Event with a Diagnostic on the next real Execution.
     """
 
     experiment_name: str
     tracking_uri: str | None = None
     artifact_location: str | None = None
-    payload_artifacts: frozenset[str] = frozenset()
-    metric_outputs: tuple[MlflowMetricOutput, ...] = ()
     model_registration: MlflowModelRegistration | None = None
     strict: bool = False
     _mlflow: Any = field(default=None, init=False, repr=False)
@@ -105,24 +185,13 @@ class MlflowAdapter:
         default_factory=set, init=False, repr=False
     )
     _emitted_metric_names: set[str] = field(default_factory=set, init=False, repr=False)
+    _declarations: dict[str, _MlflowDeclaration] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if not self.experiment_name:
             raise ValueError("MLflow experiment_name must be non-empty")
-        if not isinstance(self.payload_artifacts, frozenset) or not all(
-            isinstance(name, str) and name for name in self.payload_artifacts
-        ):
-            raise TypeError("payload_artifacts must be a frozenset of non-empty names")
-        if not isinstance(self.metric_outputs, tuple) or not all(
-            isinstance(output, MlflowMetricOutput) for output in self.metric_outputs
-        ):
-            raise TypeError("metric_outputs must be a tuple of MlflowMetricOutput")
-        selected_outputs = [
-            (output.output.locator, output.output.port)
-            for output in self.metric_outputs
-        ]
-        if len(selected_outputs) != len(set(selected_outputs)):
-            raise ValueError("each MLflow metric output may be selected only once")
 
     def for_run(self) -> MlflowAdapter:
         """Return a fresh mirror session from this reusable run declaration."""
@@ -131,8 +200,6 @@ class MlflowAdapter:
             experiment_name=self.experiment_name,
             tracking_uri=self.tracking_uri,
             artifact_location=self.artifact_location,
-            payload_artifacts=self.payload_artifacts,
-            metric_outputs=self.metric_outputs,
             model_registration=self.model_registration,
             strict=self.strict,
         )
@@ -191,6 +258,19 @@ class MlflowAdapter:
 
         self._log_artifact(artifact)
 
+    def on_computation(
+        self,
+        _observed: OclpRun,
+        *,
+        computation: Computation,
+        function: Callable[..., object],
+    ) -> None:
+        """Remember optional local MLflow policy for one Core Computation."""
+
+        declaration = _mlflow_declaration(function)
+        if declaration is not None:
+            self._declarations[computation.id] = declaration
+
     def on_execution(
         self,
         _observed: OclpRun,
@@ -228,8 +308,12 @@ class MlflowAdapter:
                 for name, value in execution.parameters.items()
             }
         )
-        for artifact in outputs.values():
-            self._log_artifact(artifact)
+        declaration = self._declarations.get(computation.id)
+        selected_payloads = (
+            declaration.payloads if declaration is not None else frozenset()
+        )
+        for port, artifact in outputs.items():
+            self._log_artifact(artifact, selected_payload=port in selected_payloads)
         for record in evidence:
             self._log_record(record)
             metrics = _numeric_evidence_metrics(record)
@@ -238,10 +322,11 @@ class MlflowAdapter:
                 self._mlflow.log_metrics(
                     {f"{prefix}.{name}": value for name, value in metrics.items()}
                 )
-        self._log_selected_output_metrics(
+        self._log_declared_output_metrics(
             computation=computation,
             execution=execution,
             outputs=outputs,
+            declaration=declaration,
         )
 
     def on_artifact_set(
@@ -264,7 +349,9 @@ class MlflowAdapter:
         if artifact_set.manifest is not None:
             self._log_artifact(artifact_set.manifest)
 
-    def _log_artifact(self, artifact: ArtifactHandle) -> None:
+    def _log_artifact(
+        self, artifact: ArtifactHandle, *, selected_payload: bool = False
+    ) -> None:
         self._require_started()
         if artifact.reference.id in self._registered_artifact_ids:
             return
@@ -278,7 +365,7 @@ class MlflowAdapter:
             and self.model_registration.artifact_name == artifact.artifact.name
         )
         if nominated_for_registration or _should_upload_payload(
-            artifact, self.payload_artifacts
+            artifact, selected_payload=selected_payload
         ):
             artifact_name = artifact.artifact.name or artifact.reference.id
             component = _mlflow_component(artifact_name)
@@ -351,29 +438,30 @@ class MlflowAdapter:
             }
         )
 
-    def _log_selected_output_metrics(
+    def _log_declared_output_metrics(
         self,
         *,
         computation: Computation,
         execution: Execution,
         outputs: Mapping[str, ArtifactHandle],
+        declaration: _MlflowDeclaration | None,
     ) -> None:
         """Extract opted-in JSON output scalars into collision-safe MLflow keys."""
 
-        for declaration in self.metric_outputs:
-            if declaration.output.locator != computation.implementation.locator:
-                continue
-            artifact = outputs.get(declaration.output.port)
+        if declaration is None:
+            return
+        for metric in declaration.metrics:
+            artifact = outputs.get(metric.output_port)
             if artifact is None:
                 raise ValueError(
-                    "selected MLflow metric output was not materialized: "
-                    f"{declaration.output.locator}.{declaration.output.port}"
+                    "declared MLflow metric output was not materialized: "
+                    f"{computation.name or computation.id}.{metric.output_port}"
                 )
             values = _numeric_json_artifact_fields(artifact)
             if not values:
                 continue
             prefix = _metric_output_prefix(
-                declaration=declaration,
+                declaration=metric,
                 computation=computation,
                 execution=execution,
             )
@@ -383,20 +471,18 @@ class MlflowAdapter:
                 raise ValueError(
                     "MLflow metric output keys would collide in one run: "
                     f"{', '.join(collisions)}; add dimensions to "
-                    "MlflowMetricOutput for repeated Computation calls"
+                    "MlflowMetrics for repeated Computation calls"
                 )
             self._mlflow.log_metrics(metrics)
             self._emitted_metric_names.update(metrics)
 
 
-def _should_upload_payload(
-    artifact: ArtifactHandle, selected_names: frozenset[str]
-) -> bool:
+def _should_upload_payload(artifact: ArtifactHandle, *, selected_payload: bool) -> bool:
     """Return whether a payload is a model or an explicitly selected copy."""
 
     media_type = artifact.artifact.media_type.lower()
     return (
-        artifact.artifact.name in selected_names
+        selected_payload
         or "model" in media_type
         or media_type.startswith("application/x-catboost")
     )
@@ -437,7 +523,7 @@ def _numeric_json_artifact_fields(artifact: ArtifactHandle) -> dict[str, float]:
 
 def _metric_output_prefix(
     *,
-    declaration: MlflowMetricOutput,
+    declaration: MlflowMetrics,
     computation: Computation,
     execution: Execution,
 ) -> str:

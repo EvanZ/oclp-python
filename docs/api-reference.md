@@ -16,7 +16,7 @@ specification](https://evanz.github.io/open-computation-lifecycle/protocol/speci
 | Persist an acquired value | An Artifact decorator such as `@json_artifact` |
 | Declare and observe application work | `@computation` and `OclpRun` / `observe_run(...)` |
 | Require a validation gate | `@evidence` and `requires=(...)` |
-| Build a release/package | `ComputationArtifactSet`, `RunArtifactSet`, or `publish_artifact_set(...)` |
+| Build a release/package | `ComputationArtifactSet`, `@artifact_set`, or `publish_artifact_set(...)` |
 | Capture a Git source basis | `source_from_git_checkout(...)` |
 | Reproduce dirty source changes | `capture_git_source_overlay(...)` |
 | Publish locally | `LocalArtifactPublisher` |
@@ -235,7 +235,6 @@ contains evaluators decorated with `@evidence`.
 | `computation_template(function)` | Read static declaration metadata. |
 | `computation_record(function, source=...)` | Materialize a source-bound Core Computation directly. |
 | `computation_input_artifact_types(function)` | Read declared Artifact inputs. |
-| `computation_output(function, port)` or `function.output(port)` | Refer to an output in `RunArtifactSet`. |
 | `many(ArtifactType)` | Declare a many-cardinality input. |
 | `artifact_set_input({"model": CatBoostModelArtifact, ...})` | Declare named ArtifactSet members required as one input. |
 
@@ -292,7 +291,6 @@ with a Diagnostic rather than disappearing as logs.
 ```python
 @run(
     name="Daily training",
-    artifact_sets=(),
     adapters=(),
     required_evidence_policy="continue",
 )
@@ -347,7 +345,7 @@ pip install 'oclp[mlflow]'
 Then attach one adapter to an observed run:
 
 ```python
-from oclp import MlflowAdapter, MlflowMetricOutput, observe_run, run
+from oclp import MlflowAdapter, observe_run, run
 
 @run(
     name="Daily training",
@@ -355,7 +353,6 @@ from oclp import MlflowAdapter, MlflowMetricOutput, observe_run, run
         MlflowAdapter(
             experiment_name="daily-training",
             tracking_uri="sqlite:///mlflow.db",
-            payload_artifacts=frozenset({"Training report"}),
         ),
     ),
 )
@@ -375,30 +372,35 @@ The adapter mirrors canonical OCLP record JSON, UUID tags, typed Execution
 parameters, and top-level numeric Evidence details. Execution parameter keys
 include their OCLP Execution UUID because MLflow parameters are immutable
 within one MLflow run while a Computation may run repeatedly with different
-arguments. It mirrors model payloads by default; `payload_artifacts` opts
-additional named payloads in. OCLP is always authoritative: the adapter never
-reads MLflow to create, validate, or query OCLP provenance.
+arguments. It mirrors model payloads by default. OCLP is always authoritative:
+the adapter never reads MLflow to create, validate, or query OCLP provenance.
 Each mirrored payload is stored beneath its OCLP Artifact UUID, so repeated
 same-named outputs (for example, temporal-fold models) remain distinct in the
 MLflow artifact store.
 
-For selected JSON output Artifacts, add `MlflowMetricOutput` declarations:
+### `@mlflow` and `MlflowMetrics`
+
+Use `@mlflow` outside `@computation` to keep MLflow presentation policy next
+to the output it projects:
 
 ```python
-adapter = MlflowAdapter(
-    experiment_name="daily-training",
-    metric_outputs=(
-        MlflowMetricOutput(
-            output=evaluate_model.output("metrics"),
-            prefix="validation",
-        ),
-        MlflowMetricOutput(
-            output=train_fold.output("metrics"),
+from oclp import JsonArtifact, MlflowMetrics, computation, mlflow
+
+@mlflow(
+    metrics=(
+        MlflowMetrics(
+            output_port="metrics",
             prefix="fold",
             dimensions=("fold_number",),
         ),
     ),
 )
+@computation(
+    name="Train fold",
+    outputs={"metrics": JsonArtifact(name="Fold metrics")},
+)
+def train_fold(*, fold_number: int) -> dict[str, object]:
+    return {"metrics": {"rmse": 42.1}}
 ```
 
 The selected output must be an `application/json` Artifact. The adapter reads
@@ -406,6 +408,14 @@ its verified bytes and logs only top-level numeric scalar fields. `dimensions`
 must name declared scalar Execution parameters and prevent repeated invocations
 from producing the same MLflow key. An attempted collision is an adapter
 failure: it follows the normal Diagnostic behavior unless `strict=True`.
+
+`@mlflow(payloads=("report",))` similarly mirrors a named non-model output
+payload. Payload names are exact output ports, not artifact display names.
+Model payloads always mirror; canonical OCLP record JSON always mirrors. The
+declaration is inert when the active run has no `MlflowAdapter`, so the same
+Computation works unchanged in environments without MLflow. Execution
+parameters already mirror automatically, so the decorator is needed only for
+metric projections and additional payloads.
 
 After the adapter is declared, an application can retrieve its active session
 with `observed.adapter(MlflowAdapter)` and deliberately add domain-specific
@@ -449,33 +459,75 @@ with OclpRun(publisher=publisher, source=source) as observed:
 
 `active_run()` returns that context or `None`.
 
-### `RunArtifactSet`
+### `@artifact_set`
 
-Use `RunArtifactSet` for a package assembled from outputs of several child
-computations:
+Use `@artifact_set` for a package assembled from outputs of one or several
+child computations. Apply it outside the `@computation` that emits the
+members. A single `members` mapping keeps related outputs from one computation
+together:
 
 ```python
+@artifact_set(
+    name="Validated release",
+    members={
+        "model": ("model", "model"),
+        "metrics": ("metrics", "validation-report"),
+    },
+)
+@computation(
+    name="Train model",
+    outputs={
+        "model": CatBoostModelArtifact(name="Validated model"),
+        "metrics": JsonArtifact(name="Validation metrics"),
+    },
+)
+def train_model(...): ...
+
+
+@artifact_set(
+    name="Validated release",
+    output_port="features",
+    role="training-data",
+)
+@computation(
+    name="Prepare features",
+    outputs={"features": CsvArtifact(name="Training features")},
+)
+def prepare_features(...): ...
+
+
 @run(
     name="Daily training",
-    artifact_sets=(
-        RunArtifactSet(
-            name="Validated release",
-            members={
-                "model": (train_model.output("model"), "model"),
-                "metrics": (evaluate_model.output("metrics"), "metrics"),
-            },
-            materialize_manifest=True,
-            manifest_name="Validated release manifest",
-        ),
-    ),
 )
 def train(...): ...
 ```
 
-The SDK resolves declared members only after a successful `observe_run` context.
-Retrieve the resulting `ArtifactSetHandle` with
-`observed.artifact_set("Validated release")`. Each member must resolve exactly
-once; use the dynamic API below when that cannot be known beforehand.
+#### Decorator order
+
+`@computation` must be closest to the function. Both `@artifact_set` and
+`@mlflow` read its declared output ports, so they must be applied outside it.
+When a Computation uses both, their order relative to one another does not
+matter:
+
+```python
+@artifact_set(name="Validated release", output_port="metrics")
+@mlflow(metrics=(MlflowMetrics(output_port="metrics", prefix="validation"),))
+@computation(...)
+def evaluate_model(...): ...
+```
+
+Python applies decorators from the bottom up. Therefore placing `@computation`
+outside either declaration decorator fails because the declaration would run
+before a Computation template exists.
+
+The SDK resolves the local declarations only after a successful observed
+context. Retrieve the resulting `ArtifactSetHandle` with
+`observed.artifact_set("Validated release")`. Each member must materialize
+exactly once. The `members` keys are the member names; the concise
+`output_port=` form uses the output port as its default member name, with
+`member_name=` available for a one-output override. Use the dynamic API below
+when members cannot be known beforehand. The SDK creates a durable package
+representation automatically, using the same `name` as the ArtifactSet.
 
 | `OclpRun` API | Result |
 | --- | --- |
@@ -484,7 +536,7 @@ once; use the dynamic API below when that cannot be known beforehand.
 | `execution_for(call_result)` / `computation_for(call_result)` | Exact Core reference. |
 | `evidence_for(call_result)` | Evidence emitted for that call. |
 | `publish_artifact_set(name=..., members=..., materialize_manifest=False, manifest_name=None)` | Publish an explicitly dynamic collection. |
-| `artifact_set(name)` | Retrieve a completed declared run-level set. |
+| `artifact_set(name)` | Retrieve a completed decorator-assembled set. |
 
 `ArtifactSetHandle.member(name)` returns a member handle;
 `load_member(name, target_type)` verifies and adapts it. Use
