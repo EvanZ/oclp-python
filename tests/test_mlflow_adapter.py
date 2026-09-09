@@ -296,6 +296,179 @@ def test_mlflow_adapter_scopes_same_named_payloads_by_artifact_id(
     )
 
 
+def test_mlflow_decorator_projects_explicit_workflow_parameters(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow_client, _client = fake_mlflow
+    adapter = MlflowAdapter(experiment_name="oclp-tests")
+
+    @mlflow(
+        run_parameters={
+            "release_id": "release_id",
+            "temporal_fold_count": "fold_count",
+        }
+    )
+    @run(name="Workflow parameters", adapters=(adapter,))
+    def workflow(*, release_id: str, fold_count: int) -> None:
+        train_adapter_test_model(depth=fold_count)
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+        ):
+            workflow(release_id="release-42", fold_count=3)
+
+    assert mlflow_client.parameters["workflow.release_id"] == "release-42"
+    assert mlflow_client.parameters["workflow.temporal_fold_count"] == "3"
+    assert mlflow_client.tags["oclp.mlflow.workflow_parameter.release_id"] == "true"
+    assert (
+        mlflow_client.tags["oclp.mlflow.workflow_parameter.temporal_fold_count"]
+        == "true"
+    )
+    assert any(name.endswith(".depth") for name in mlflow_client.parameters)
+
+
+def test_mlflow_run_parameters_reject_unknown_workflow_arguments() -> None:
+    with pytest.raises(
+        ValueError, match="must name workflow arguments; unknown: missing"
+    ):
+
+        @mlflow(run_parameters={"release_id": "missing"})
+        @run(name="Invalid workflow parameters")
+        def workflow(*, release_id: str) -> None:
+            return None
+
+
+def test_mlflow_run_parameters_are_inert_without_an_adapter(tmp_path: Path) -> None:
+    @mlflow(run_parameters={"release_id": "release_id"})
+    @run(name="No MLflow workflow")
+    def workflow(*, release_id: str) -> None:
+        return None
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+        ):
+            workflow(release_id="release-42")
+        records = publisher.records()
+
+    assert records == ()
+
+
+@pytest.mark.parametrize("release_id", (object(), float("nan")))
+def test_mlflow_run_parameters_require_json_compatible_values(
+    tmp_path: Path, release_id: object
+) -> None:
+    @mlflow(run_parameters={"release_id": "release_id"})
+    @run(name="Invalid MLflow workflow value")
+    def workflow(*, release_id: object) -> None:
+        return None
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+        ):
+            with pytest.raises(ValueError, match="must be JSON-compatible"):
+                workflow(release_id=release_id)
+
+
+def test_mlflow_run_parameter_collision_is_a_diagnostic_unless_strict(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow_client, _client = fake_mlflow
+    adapter = MlflowAdapter(experiment_name="oclp-tests")
+
+    @mlflow(run_parameters={"release_id": "release_id"})
+    @run(name="Non-strict MLflow workflow parameter collision", adapters=(adapter,))
+    def workflow(*, release_id: str) -> None:
+        train_adapter_test_model(depth=1)
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+        ):
+            workflow(release_id="first")
+            workflow(release_id="second")
+        records = publisher.records()
+
+    assert mlflow_client.parameters["workflow.release_id"] == "first"
+    diagnostics = [
+        record
+        for record in records
+        if isinstance(record, Event) and record.event_type == "adapter-failed"
+    ]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].diagnostic is not None
+    assert "workflow.release_id" in diagnostics[0].diagnostic.message
+
+
+def test_strict_mlflow_run_parameter_collision_fails_the_workflow(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow_client, _client = fake_mlflow
+    adapter = MlflowAdapter(experiment_name="oclp-tests", strict=True)
+
+    @mlflow(run_parameters={"release_id": "release_id"})
+    @run(name="Strict MLflow workflow parameter collision", adapters=(adapter,))
+    def workflow(*, release_id: str) -> None:
+        return None
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with pytest.raises(ValueError, match="workflow.release_id"):
+            with observe_run(
+                workflow,
+                publisher=publisher,
+                source=GitSource(
+                    repository="https://github.com/example/adapter-test.git",
+                    commit="a" * 40,
+                ),
+            ):
+                workflow(release_id="first")
+                workflow(release_id="second")
+
+    assert mlflow_client.end_statuses == ["FAILED"]
+
+
 def test_mlflow_declaration_uploads_only_its_selected_extra_payload(
     tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
 ) -> None:

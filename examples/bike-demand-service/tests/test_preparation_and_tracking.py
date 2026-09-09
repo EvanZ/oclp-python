@@ -84,6 +84,12 @@ def test_preparation_excludes_target_derived_fields_and_creates_temporal_folds()
     )
     assert len(prepared["fold_definition"]["folds"]) == 3
     assert prepared["features"]["timestamp"].is_monotonic_increasing
+    assert prepared["data_metrics"] == {
+        "source_rows": 20,
+        "prepared_rows": 20,
+        "training_rows": 20,
+        "holdout_rows": 0,
+    }
     assert set(prepared["feature_contract"]["excluded_source_columns"]) == {
         "casual",
         "dteday",

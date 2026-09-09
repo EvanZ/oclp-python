@@ -9,10 +9,12 @@ from oclp import (
     ArtifactHandle,
     CsvArtifact,
     JsonArtifact,
+    MlflowMetrics,
     artifact_set,
     computation,
     csv_artifact,
     json_artifact,
+    mlflow,
     parquet_artifact,
 )
 from sklearn.model_selection import TimeSeriesSplit
@@ -128,6 +130,7 @@ def download_source_artifact(
         "feature-contract": ("feature_contract", "serving-contract"),
     },
 )
+@mlflow(metrics=(MlflowMetrics(output_port="data_metrics", prefix="data"),))
 @computation(
     name="Prepare bike demand features",
     inputs={
@@ -146,6 +149,10 @@ def download_source_artifact(
         "feature_contract": JsonArtifact(
             name="Feature contract",
             path="prepared/feature-contract.json",
+        ),
+        "data_metrics": JsonArtifact(
+            name="Training data metrics",
+            path="prepared/data-metrics.json",
         ),
     },
 )
@@ -187,6 +194,12 @@ def prepare_features(
     return {
         "features": feature_frame,
         "fold_definition": {"strategy": "TimeSeriesSplit", "folds": folds},
+        "data_metrics": {
+            "source_rows": int(len(source_snapshot)),
+            "prepared_rows": int(len(feature_frame)),
+            "training_rows": int(len(training)),
+            "holdout_rows": int(len(feature_frame) - len(training)),
+        },
         "feature_contract": {
             "version": 1,
             "dataset": "UCI Bike Sharing Dataset (hourly)",

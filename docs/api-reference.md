@@ -417,6 +417,47 @@ Computation works unchanged in environments without MLflow. Execution
 parameters already mirror automatically, so the decorator is needed only for
 metric projections and additional payloads.
 
+#### Workflow-level MLflow parameters
+
+Use the same decorator outside `@run` when a small, explicit set of workflow
+arguments should also appear in MLflow. The mapping is **MLflow parameter name
+to workflow argument name**:
+
+```python
+from oclp import MlflowAdapter, mlflow, run
+
+@mlflow(
+    run_parameters={
+        "release_id": "release_id",
+        "temporal_fold_count": "fold_count",
+    },
+)
+@run(
+    name="Daily training",
+    adapters=(MlflowAdapter(experiment_name="daily-training"),),
+)
+def train(*, release_id: str, fold_count: int) -> None:
+    ...
+```
+
+The adapter logs these as `workflow.release_id` and
+`workflow.temporal_fold_count`, and tags them with
+`oclp.mlflow.workflow_parameter.<name>=true`. This namespace keeps them
+separate from the automatically mirrored, Execution-UUID-scoped OCLP
+parameters. It also makes their provenance clear: they are application-chosen
+workflow context, not Core Execution parameters.
+
+Every selected argument must be JSON-compatible. The decorator rejects unknown
+argument names when the module loads. A conflicting value for the same
+`workflow.*` key within one MLflow run follows the normal adapter policy:
+it becomes an integration Diagnostic by default and raises when
+`MlflowAdapter(strict=True)` is configured. The declaration is inert without
+an MLflow adapter and never creates an OCLP record, Execution, or derivation
+edge.
+
+`run_parameters` belongs only on `@mlflow` outside `@run`; `metrics` and
+`payloads` belong only on `@mlflow` outside `@computation`.
+
 After the adapter is declared, an application can retrieve its active session
 with `observed.adapter(MlflowAdapter)` and deliberately add domain-specific
 comparison values without recreating OCLP reference wiring:

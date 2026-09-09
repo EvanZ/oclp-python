@@ -299,6 +299,10 @@ and uploads model payloads by default. Repeated fold parameters are scoped by
 their exact Execution UUID because MLflow itself does not allow a parameter
 value to change in one run. Computation-local `@mlflow` declarations extract
 numeric fields from the fold, candidate-evaluation, and holdout JSON Artifacts.
+The outer workflow `@mlflow(run_parameters=...)` declaration mirrors the
+explicit training context—materialization ID, fold count, validation threshold,
+and dataset ID—under the separate `workflow.*` namespace. Those values are an
+MLflow-only application projection, not OCLP Execution parameters.
 The runner does not retrieve OCLP references merely to make MLflow work.
 
 `@mlflow` uses exact local output ports—not a name-based search for any
@@ -317,23 +321,11 @@ The model records also carry a `fold_number` annotation, resolved from each
 `train_fold` call, so a person can identify the temporal split without
 following the Artifact UUID back through its Execution.
 
-The runner adds only a small set of domain-selected context that is not a
-Computation output, such as source-row counts, through
-`MlflowAdapter.log_metrics(...)`; it does not repeat OCLP artifact or
-Execution publication.
-
-The adapter is declared once on `@run`, while the runner retrieves its active
-per-run session by class only when it has optional MLflow-specific domain
-metrics to add:
-
-```python
-mlflow = observed.adapter(MlflowAdapter)
-mlflow.log_metrics({"validation_rmse": validation_rmse})
-```
-
-Here `MlflowAdapter` is a lookup type, not a newly constructed adapter. The
-runtime returns the one active adapter instance configured for this observed
-run, and rejects an absent or ambiguous match.
+Feature preparation persists its data-volume metrics—source, prepared,
+training, and holdout row counts—as its own JSON Artifact. Its local
+`@mlflow(metrics=...)` declaration mirrors those numeric fields. The training
+workflow therefore contains no MLflow adapter lookup or manual MLflow logging;
+the adapter observes the real declared outputs.
 
 Non-model payloads remain in OCLP unless the owning Computation explicitly
 selects output ports with `@mlflow(payloads=("report",))`. This avoids silently

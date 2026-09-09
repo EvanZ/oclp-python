@@ -531,6 +531,41 @@ class OclpRun:
                 f"available sets: {available}"
             ) from error
 
+    def project_mlflow_run_parameters(
+        self,
+        *,
+        workflow: Callable[..., object],
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object],
+        parameters: Mapping[str, str],
+    ) -> None:
+        """Project explicit workflow arguments through active integrations.
+
+        These values are intentionally not OCLP Execution parameters: a run is
+        a context grouping real Executions, not a Core record. The method only
+        validates and forwards an application-selected, JSON-compatible
+        projection to optional adapters.
+        """
+
+        bound = inspect.signature(workflow).bind(*args, **kwargs)
+        bound.apply_defaults()
+        values: dict[str, JsonValue] = {}
+        for name, argument in parameters.items():
+            try:
+                value = bound.arguments[argument]
+            except KeyError as error:  # pragma: no cover - decorator validation.
+                raise ValueError(
+                    f"workflow argument {argument!r} was not provided"
+                ) from error
+            try:
+                values[name] = json.loads(json.dumps(value, allow_nan=False))
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "MLflow run parameter values must be JSON-compatible: "
+                    f"{argument!r}"
+                ) from error
+        self._notify_adapters("on_run_parameters", self, parameters=values)
+
     def adapter(self, adapter_type: type[Any]) -> Any:
         """Return the one active integration adapter of ``adapter_type``.
 

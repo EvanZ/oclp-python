@@ -11,6 +11,7 @@ from oclp import (
     OclpRun,
     capture_git_source_overlay,
     load_release_manifest,
+    mlflow,
     observe_run,
     run,
     source_from_git_checkout,
@@ -22,7 +23,6 @@ from oclp.models import GitSource, RecordReference
 from oclp.publishing import LocalArtifactPublisher
 
 from bike_demand_service.data import (
-    HOLDOUT_START,
     UCI_BIKE_SHARING_DATASET_ID,
     download_source_csv,
     prepare_features,
@@ -81,6 +81,14 @@ class _ReleaseSmokeTestResult:
     response: RecordReference
 
 
+@mlflow(
+    run_parameters={
+        "materialization_id": "materialization_id",
+        "temporal_fold_count": "fold_count",
+        "temporal_validation_rmse_max": "temporal_validation_rmse_max",
+        "uci_dataset_id": "dataset_id",
+    },
+)
 @run(
     name="Bike demand model training",
     adapters=(
@@ -90,18 +98,18 @@ class _ReleaseSmokeTestResult:
 )
 def run_bike_training(
     *,
-    observed: OclpRun,
     materialization_id: str,
     fold_count: int,
     temporal_validation_rmse_max: float,
+    dataset_id: int = UCI_BIKE_SHARING_DATASET_ID,
 ) -> None:
     """Execute the application's real data and model flow once.
 
     ``@run`` gives every real decorated Computation the same SDK-owned run
     profile. The active SDK context carries exact Artifact bindings between
-    decorated calls automatically. ``observed`` is used only for the optional
-    application-selected MLflow run context; the SDK-owned adapter mirrors
-    records, model payloads, and declared output metrics automatically.
+    decorated calls automatically. ``@mlflow(run_parameters=...)`` mirrors the
+    explicitly selected workflow values; the SDK-owned adapter mirrors records,
+    model payloads, and all declared output metrics automatically.
     """
 
     # Acquisition is an Artifact boundary, not a derived Computation. The
@@ -111,19 +119,9 @@ def run_bike_training(
         materialization_id=materialization_id,
         fold_count=fold_count,
     )
-    mlflow = observed.adapter(MlflowAdapter)
-    mlflow.log_parameters(
-        {
-            "materialization_id": materialization_id,
-            "temporal_fold_count": fold_count,
-            "temporal_validation_rmse_max": temporal_validation_rmse_max,
-            "uci_dataset_id": UCI_BIKE_SHARING_DATASET_ID,
-        }
-    )
-    source_snapshot = download_source_csv()
+    source_snapshot = download_source_csv(dataset_id=dataset_id)
 
     prepared = prepare_features(source_snapshot, training_plan)
-    mlflow.log_metrics({"source_rows": len(prepared["features"])})
 
     # Passing exact raw values between decorated calls is sufficient within
     # this OclpRun: the SDK reuses their materialized Artifact bindings when it
@@ -151,13 +149,6 @@ def run_bike_training(
         feature_table,
         training_config_value,
         training_window="all-pre-holdout-rows",
-    )
-    mlflow.log_metrics(
-        {
-            "training_rows": int(
-                (prepared["features"]["timestamp"] < HOLDOUT_START).sum()
-            )
-        }
     )
 
     score_holdout(final_model, feature_table)
@@ -241,7 +232,6 @@ def run_demo(
             assert observed.run_id is not None
             training_run_id = str(observed.run_id)
             run_bike_training(
-                observed=observed,
                 materialization_id=materialization_id,
                 fold_count=fold_count,
                 temporal_validation_rmse_max=temporal_validation_rmse_max,

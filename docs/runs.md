@@ -148,7 +148,14 @@ ordinary model-comparison outputs while keeping the selection with the
 Computation that owns the output:
 
 ```python
-from oclp import JsonArtifact, MlflowAdapter, MlflowMetrics, computation, mlflow
+from oclp import (
+    JsonArtifact,
+    MlflowAdapter,
+    MlflowMetrics,
+    computation,
+    mlflow,
+    run,
+)
 
 @run(
     name="Daily demand model training",
@@ -187,6 +194,32 @@ by default, and this remains an MLflow projection rather than a Core OCLP
 `Metric` type. The declaration is inert when a run does not include an
 `MlflowAdapter`. Execution parameters already mirror automatically, so they
 do not need an `@mlflow` declaration.
+
+For application-selected workflow context that is not an Execution parameter,
+put `@mlflow(run_parameters=...)` outside `@run`. The mapping explicitly pairs
+the desired MLflow parameter name with a workflow argument name:
+
+```python
+@mlflow(
+    run_parameters={
+        "release_id": "release_id",
+        "temporal_fold_count": "fold_count",
+    },
+)
+@run(
+    name="Daily demand model training",
+    adapters=(MlflowAdapter(experiment_name="daily-training"),),
+)
+def train_demand_model(*, release_id: str, fold_count: int) -> None: ...
+```
+
+The mirror records these as `workflow.release_id` and
+`workflow.temporal_fold_count`, with matching
+`oclp.mlflow.workflow_parameter.<name>=true` tags. Values must be
+JSON-compatible. This is an MLflow-only projection—no OCLP Execution or other
+Core record is synthesized—and it is inert without `MlflowAdapter`. A
+conflicting workflow parameter value in one MLflow run follows the adapter's
+normal strict/Diagnostic policy.
 
 Within one active `OclpRun`, an exact raw value returned from a decorated
 Computation can be supplied directly to another decorated Computation. The SDK

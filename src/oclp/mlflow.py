@@ -8,10 +8,12 @@ The MLflow dependency is imported only when an adapter is activated.
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import TYPE_CHECKING, Any
 
 from oclp.artifacts import ArtifactHandle
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
 
 
 _MLFLOW_DECLARATION_ATTRIBUTE = "__oclp_mlflow_declaration__"
+_MLFLOW_RUN_DECLARATION_ATTRIBUTE = "__oclp_mlflow_run_declaration__"
 
 
 @dataclass(frozen=True)
@@ -75,17 +78,28 @@ class _MlflowDeclaration:
     payloads: frozenset[str]
 
 
+@dataclass(frozen=True)
+class _MlflowRunDeclaration:
+    """SDK-only workflow-level MLflow parameter projection metadata."""
+
+    parameters: Mapping[str, str]
+
+
 def mlflow(
     *,
     metrics: tuple[MlflowMetrics, ...] = (),
     payloads: tuple[str, ...] = (),
+    run_parameters: Mapping[str, str] | None = None,
 ) -> Callable[[Callable[..., object]], Callable[..., object]]:
-    """Declare optional MLflow projections for one ``@computation``.
+    """Declare optional MLflow projections for a Computation or ``@run``.
 
-    Apply this decorator outside ``@computation``. It is inert unless the
-    active ``@run`` includes :class:`MlflowAdapter`; OCLP publication and
-    ordinary calls remain unchanged. Model payloads are mirrored by default.
-    ``payloads`` opts named additional output-port payloads into MLflow.
+    For a Computation, apply this decorator outside ``@computation``. Metrics
+    and payloads are local output projections. For a workflow, apply it
+    outside ``@run`` with ``run_parameters`` mapping MLflow parameter names to
+    explicit workflow argument names. It is inert unless the active run
+    includes :class:`MlflowAdapter`; OCLP publication and ordinary calls remain
+    unchanged. Model payloads are mirrored by default. ``payloads`` opts named
+    additional output-port payloads into MLflow.
     """
 
     if not isinstance(metrics, tuple) or not all(
@@ -101,52 +115,156 @@ def mlflow(
     metric_ports = [metric.output_port for metric in metrics]
     if len(metric_ports) != len(set(metric_ports)):
         raise ValueError("each MLflow metric output port may be selected only once")
+    normalized_run_parameters = _normalize_run_parameters(run_parameters)
 
     def decorate(function: Callable[..., object]) -> Callable[..., object]:
-        template = computation_template(function)
-        available_outputs = set(template.output_artifacts)
-        unknown_payloads = sorted(set(payloads).difference(available_outputs))
-        if unknown_payloads:
-            raise ValueError(
-                "MLflow payloads must name declared Computation output ports; "
-                f"unknown: {', '.join(unknown_payloads)}"
+        from oclp.runtime import run_template
+
+        try:
+            run_template(function)
+        except ValueError:
+            return _decorate_computation_mlflow(
+                function,
+                metrics=metrics,
+                payloads=payloads,
+                run_parameters=normalized_run_parameters,
             )
-        available_parameters = {
-            parameter.name for parameter in template.parameter_definitions
-        }
-        for metric in metrics:
-            if metric.output_port not in template.output_artifacts:
-                available = ", ".join(sorted(available_outputs)) or "none"
-                raise ValueError(
-                    "MLflow metric output_port must name a declared Computation "
-                    f"output; available: {available}"
-                )
-            artifact_type = template.output_artifacts[metric.output_port]
-            if artifact_type.media_type != "application/json":
-                raise ValueError(
-                    "MLflow metric output must select an application/json Artifact "
-                    "output"
-                )
-            unknown_dimensions = sorted(
-                set(metric.dimensions).difference(available_parameters)
-            )
-            if unknown_dimensions:
-                raise ValueError(
-                    "MLflow metric dimensions must name declared Computation "
-                    f"parameters; unknown: {', '.join(unknown_dimensions)}"
-                )
-        declaration = _MlflowDeclaration(
+        return _decorate_run_mlflow(
+            function,
             metrics=metrics,
-            payloads=frozenset(payloads),
+            payloads=payloads,
+            run_parameters=normalized_run_parameters,
         )
-        observed_function = getattr(function, "__oclp_observed_function__", function)
-        if getattr(function, _MLFLOW_DECLARATION_ATTRIBUTE, None) is not None:
-            raise ValueError("a Computation can have only one @mlflow declaration")
-        setattr(function, _MLFLOW_DECLARATION_ATTRIBUTE, declaration)
-        setattr(observed_function, _MLFLOW_DECLARATION_ATTRIBUTE, declaration)
-        return function
 
     return decorate
+
+
+def _decorate_computation_mlflow(
+    function: Callable[..., object],
+    *,
+    metrics: tuple[MlflowMetrics, ...],
+    payloads: tuple[str, ...],
+    run_parameters: Mapping[str, str] | None,
+) -> Callable[..., object]:
+    """Attach local MLflow output projections to a Computation callable."""
+
+    if run_parameters is not None:
+        raise ValueError(
+            "mlflow run_parameters apply only outside an @run workflow"
+        )
+    template = computation_template(function)
+    available_outputs = set(template.output_artifacts)
+    unknown_payloads = sorted(set(payloads).difference(available_outputs))
+    if unknown_payloads:
+        raise ValueError(
+            "MLflow payloads must name declared Computation output ports; "
+            f"unknown: {', '.join(unknown_payloads)}"
+        )
+    available_parameters = {
+        parameter.name for parameter in template.parameter_definitions
+    }
+    for metric in metrics:
+        if metric.output_port not in template.output_artifacts:
+            available = ", ".join(sorted(available_outputs)) or "none"
+            raise ValueError(
+                "MLflow metric output_port must name a declared Computation "
+                f"output; available: {available}"
+            )
+        artifact_type = template.output_artifacts[metric.output_port]
+        if artifact_type.media_type != "application/json":
+            raise ValueError(
+                "MLflow metric output must select an application/json Artifact "
+                "output"
+            )
+        unknown_dimensions = sorted(
+            set(metric.dimensions).difference(available_parameters)
+        )
+        if unknown_dimensions:
+            raise ValueError(
+                "MLflow metric dimensions must name declared Computation "
+                f"parameters; unknown: {', '.join(unknown_dimensions)}"
+            )
+    declaration = _MlflowDeclaration(
+        metrics=metrics,
+        payloads=frozenset(payloads),
+    )
+    observed_function = getattr(function, "__oclp_observed_function__", function)
+    if getattr(function, _MLFLOW_DECLARATION_ATTRIBUTE, None) is not None:
+        raise ValueError("a Computation can have only one @mlflow declaration")
+    setattr(function, _MLFLOW_DECLARATION_ATTRIBUTE, declaration)
+    setattr(observed_function, _MLFLOW_DECLARATION_ATTRIBUTE, declaration)
+    return function
+
+
+def _decorate_run_mlflow(
+    function: Callable[..., object],
+    *,
+    metrics: tuple[MlflowMetrics, ...],
+    payloads: tuple[str, ...],
+    run_parameters: Mapping[str, str] | None,
+) -> Callable[..., object]:
+    """Wrap one ``@run`` workflow to project selected argument values."""
+
+    if metrics or payloads:
+        raise ValueError(
+            "MLflow metrics and payloads apply only outside an @computation"
+        )
+    if run_parameters is None:
+        raise ValueError("mlflow outside @run requires run_parameters")
+    signature = inspect.signature(function)
+    unknown_arguments = sorted(
+        set(run_parameters.values()).difference(signature.parameters)
+    )
+    if unknown_arguments:
+        raise ValueError(
+            "MLflow run_parameters must name workflow arguments; unknown: "
+            + ", ".join(unknown_arguments)
+        )
+    declaration = _MlflowRunDeclaration(parameters=run_parameters)
+    if getattr(function, _MLFLOW_RUN_DECLARATION_ATTRIBUTE, None) is not None:
+        raise ValueError("a run workflow can have only one @mlflow declaration")
+
+    @wraps(function)
+    def observed(*args: object, **kwargs: object) -> object:
+        from oclp.runtime import active_run
+
+        run = active_run()
+        if run is not None:
+            run.project_mlflow_run_parameters(
+                workflow=function,
+                args=args,
+                kwargs=kwargs,
+                parameters=declaration.parameters,
+            )
+        return function(*args, **kwargs)
+
+    setattr(observed, _MLFLOW_RUN_DECLARATION_ATTRIBUTE, declaration)
+    return observed
+
+
+def _normalize_run_parameters(
+    parameters: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+    """Validate explicit MLflow workflow-key to argument-name selections."""
+
+    if parameters is None:
+        return None
+    if not isinstance(parameters, Mapping):
+        raise TypeError("mlflow run_parameters must be a mapping")
+    normalized: dict[str, str] = {}
+    for key, argument in parameters.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("MLflow run parameter names must be non-empty strings")
+        if not isinstance(argument, str) or not argument:
+            raise ValueError("MLflow run parameter arguments must be non-empty strings")
+        component = _mlflow_component(key)
+        if component in normalized:
+            raise ValueError(
+                "MLflow run parameter names collide after normalization: "
+                f"{key!r}"
+            )
+        normalized[component] = argument
+    return normalized
 
 
 def _mlflow_declaration(function: Callable[..., object]) -> _MlflowDeclaration | None:
@@ -186,6 +304,9 @@ class MlflowAdapter:
     )
     _emitted_metric_names: set[str] = field(default_factory=set, init=False, repr=False)
     _declarations: dict[str, _MlflowDeclaration] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _run_parameter_values: dict[str, str] = field(
         default_factory=dict, init=False, repr=False
     )
 
@@ -252,6 +373,48 @@ class MlflowAdapter:
             return
         status = "FAILED" if error is not None else "FINISHED"
         self._mlflow.end_run(status=status)
+
+    def on_run_parameters(
+        self,
+        _observed: OclpRun,
+        *,
+        parameters: Mapping[str, object],
+    ) -> None:
+        """Mirror explicit workflow values under an unambiguous namespace."""
+
+        self._require_started()
+        values = {
+            f"workflow.{_mlflow_component(name)}": _workflow_parameter_value(value)
+            for name, value in parameters.items()
+        }
+        collisions = {
+            name: value
+            for name, value in values.items()
+            if name in self._run_parameter_values
+            and self._run_parameter_values[name] != value
+        }
+        if collisions:
+            raise ValueError(
+                "MLflow workflow parameter keys would collide in one run: "
+                + ", ".join(sorted(collisions))
+            )
+        new_values = {
+            name: value
+            for name, value in values.items()
+            if name not in self._run_parameter_values
+        }
+        if not new_values:
+            return
+        self._mlflow.log_params(new_values)
+        self._mlflow.set_tags(
+            {
+                f"oclp.mlflow.workflow_parameter.{name.removeprefix('workflow.')}": (
+                    "true"
+                )
+                for name in new_values
+            }
+        )
+        self._run_parameter_values.update(new_values)
 
     def on_artifact(self, _observed: OclpRun, artifact: ArtifactHandle) -> None:
         """Mirror one Artifact record and any selected payload bytes."""
@@ -550,6 +713,14 @@ def _parameter_value(value: object) -> str:
     if isinstance(value, (str, int, float, bool)):
         return str(value)
     return repr(value)
+
+
+def _workflow_parameter_value(value: object) -> str:
+    """Render a validated JSON value deterministically for MLflow."""
+
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _mlflow_component(value: str) -> str:
