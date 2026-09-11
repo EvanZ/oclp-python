@@ -15,6 +15,11 @@ from oclp.profiles.execution_context import (
     ExecutionContextManifest,
     ExecutionRuntime,
 )
+from oclp.profiles.release_manifest import (
+    RELEASE_MANIFEST_PROFILE,
+    RELEASE_MANIFEST_PROFILE_VERSION,
+    ReleaseManifestBinding,
+)
 from oclp.profiles.run import (
     EXECUTION_STARTED,
     EXECUTION_TERMINAL,
@@ -25,11 +30,6 @@ from oclp.profiles.run import (
     RunTimeline,
     RunTimelineVector,
     run_timeline,
-)
-from oclp.profiles.release_manifest import (
-    RELEASE_MANIFEST_PROFILE,
-    RELEASE_MANIFEST_PROFILE_VERSION,
-    ReleaseManifestBinding,
 )
 
 __all__ = [

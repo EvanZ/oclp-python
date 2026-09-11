@@ -2,14 +2,24 @@
 
 ## Install
 
-Install the package directly from this repository while it is pre-release:
+Install the latest published experimental SDK release:
 
 ```bash
-pip install "oclp[duckdb] @ git+https://github.com/EvanZ/oclp-python.git@main"
+pip install "oclp[duckdb]"
 ```
 
-Use an immutable commit SHA rather than `main` when building a reproducible
-deployment. Omit `[duckdb]` if the local catalog is not needed.
+Omit `[duckdb]` if the local catalog is not needed. The SDK is pre-1.0, so pin
+a published version when a deployment needs reproducible behavior:
+
+```bash
+pip install "oclp[duckdb]==0.3.0a0"
+```
+
+To test unreleased changes, install from a reviewed immutable Git commit:
+
+```bash
+pip install "oclp[duckdb] @ git+https://github.com/EvanZ/oclp-python.git@<commit-sha>"
+```
 
 For SDK development:
 

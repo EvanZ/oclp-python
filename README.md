@@ -18,11 +18,21 @@ Full SDK documentation is published at
 ## Install
 
 ```bash
+pip install "oclp[duckdb]"
+```
+
+Omit `[duckdb]` if the local record catalog is not needed. The SDK is an
+experimental pre-1.0 package: APIs and protocol support may change between
+minor releases. Pin a published version for reproducible deployments.
+
+For unreleased changes, install directly from GitHub:
+
+```bash
 pip install "oclp[duckdb] @ git+https://github.com/EvanZ/oclp-python.git@main"
 ```
 
-For a reproducible deployment, replace `main` with a reviewed immutable commit
-SHA. The optional `duckdb` extra installs the local record catalog.
+Replace `main` with a reviewed immutable commit SHA when testing an unreleased
+build reproducibly.
 
 For development:
 
@@ -43,6 +53,16 @@ service. Applications decide when to create records; consumers such as
 The `duckdb` extra supplies a simple local catalog for resolving
 content-bound records and their locations. It is optional implementation
 infrastructure, not a requirement of the OCLP standard.
+
+## Releases
+
+GitHub `main` contains ongoing development. PyPI receives intentional,
+versioned releases published from a GitHub Release through PyPI Trusted
+Publishing. Early releases use PEP 440 pre-release versions (such as
+`0.3.0a0`) while the OCLP protocol and SDK API are still evolving. See the
+[GitHub releases](https://github.com/EvanZ/oclp-python/releases) for changes
+and installation versions. Maintainers can follow the
+[release instructions](docs/releasing.md).
 
 ## End-to-end example
 

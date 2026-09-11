@@ -14,9 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from oclp import canonical_json_bytes
-from oclp.canonical import record_digest
-from oclp.catalog.duckdb import DuckdbCatalog
+from oclp.canonical import canonical_json_bytes, record_digest
 from oclp.models import Artifact, Digest, OclpRecord, RecordReference, new_record_id
 
 
@@ -46,6 +44,8 @@ class LocalArtifactPublisher:
         record_root: Path,
         payload_root: Path,
     ) -> None:
+        from oclp.catalog.duckdb import DuckdbCatalog
+
         self._catalog = DuckdbCatalog(catalog_path)
         self.record_root = record_root
         self.payload_root = payload_root

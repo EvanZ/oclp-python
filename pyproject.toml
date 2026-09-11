@@ -8,11 +8,30 @@ license = "Apache-2.0"
 authors = [
   { name = "Evan Zamir" },
 ]
+keywords = ["provenance", "lineage", "reproducibility", "artifacts", "oclp"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "jsonschema>=4.23,<5",
   "pydantic>=2.10,<3",
   "rfc8785>=0.1.4,<1",
 ]
+
+[project.urls]
+Homepage = "https://evanz.github.io/oclp-python/"
+Documentation = "https://evanz.github.io/oclp-python/"
+Repository = "https://github.com/EvanZ/oclp-python"
+Issues = "https://github.com/EvanZ/oclp-python/issues"
+Changelog = "https://github.com/EvanZ/oclp-python/releases"
 
 [project.optional-dependencies]
 duckdb = [
@@ -72,6 +91,18 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oclp"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/.cache/",
+  "/.pytest_cache/",
+  "/.ruff_cache/",
+  "/.venv*/",
+  "/build/",
+  "/dist/",
+  "/examples/bike-demand-service/data/",
+  "/site/",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
