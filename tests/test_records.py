@@ -57,6 +57,32 @@ def test_record_name_is_optional_human_metadata_not_identity() -> None:
         )
 
 
+def test_record_description_is_optional_canonical_human_metadata() -> None:
+    artifact = Artifact(
+        id=_id("artifact:described"),
+        name="Input document",
+        description="Original report selected as the transformation input.",
+        media_type="application/octet-stream",
+        digest=Digest(value="a" * 64),
+        size=12,
+    )
+    undescribed = artifact.model_copy(update={"description": None})
+
+    assert b'"description":"Original report selected as the transformation input."' in (
+        canonical_json_bytes(artifact)
+    )
+    assert b'"description"' not in canonical_json_bytes(undescribed)
+    assert record_digest(artifact) != record_digest(undescribed)
+    with pytest.raises(ValidationError):
+        Artifact(
+            id=_id("artifact:empty-description"),
+            description="",
+            media_type="application/octet-stream",
+            digest=Digest(value="a" * 64),
+            size=12,
+        )
+
+
 def test_artifact_and_artifact_set_created_at_are_immutable_record_metadata() -> None:
     created_at = datetime(2026, 8, 27, 5, tzinfo=UTC)
     artifact = Artifact(

@@ -20,6 +20,7 @@ from typing import (
 
 from pydantic import Field, JsonValue, model_validator
 
+from oclp._descriptions import resolve_callable_description
 from oclp.artifacts import ArtifactType
 from oclp.evidence import evidence_implementation
 from oclp.models import (
@@ -310,6 +311,7 @@ class ComputationTemplate(OclpModel):
     """
 
     name: str = Field(min_length=1)
+    description: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
     implementation_kind: Literal["python-callable"] = "python-callable"
@@ -346,6 +348,8 @@ class ComputationTemplate(OclpModel):
 def computation(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     input_ports: tuple[PortDefinition, ...] = (),
     inputs: Mapping[str, type[ArtifactType] | ManyArtifacts | ArtifactSetInput]
     | None = None,
@@ -412,6 +416,7 @@ def computation(
     # the contract that requires the callable signature itself.
     ComputationTemplate(
         name=name,
+        description=description,
         input_ports=input_ports,
         output_ports=output_ports,
         output_artifacts=output_artifacts,
@@ -427,8 +432,15 @@ def computation(
         if getattr(function, _COMPUTATION_TEMPLATE_ATTRIBUTE, None) is not None:
             raise ValueError("a callable can have only one OCLP Computation template")
         _validate_input_port_parameters(function, input_ports)
+        resolved_description = resolve_callable_description(
+            description=description,
+            description_from_docstring=description_from_docstring,
+            function=function,
+            decorator="@computation",
+        )
         template = ComputationTemplate(
             name=name,
+            description=resolved_description,
             input_ports=input_ports,
             output_ports=output_ports,
             parameter_definitions=_infer_parameter_definitions(function, input_ports),
@@ -753,6 +765,7 @@ def computation_record(
     return Computation(
         id=new_record_id(),
         name=template.name,
+        description=template.description,
         profiles=template.profiles,
         annotations=template.annotations,
         implementation=Implementation(

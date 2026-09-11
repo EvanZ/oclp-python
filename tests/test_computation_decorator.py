@@ -25,6 +25,7 @@ from oclp import (
     active_run,
     artifact_set,
     artifact_set_input,
+    artifact_type,
     computation,
     computation_input_artifact_types,
     computation_record,
@@ -335,7 +336,10 @@ def test_observe_run_derives_one_shared_uuid_profile_for_real_executions(
     assert execution.profiles["run"]["version"] == "0.3.0-draft"
     assert UUID(execution.profiles["run"]["run_id"]).version == 4
     assert execution.profiles["run"]["run_name"] == "Reports"
-    assert execution.name == "Normalize report"
+    # The Computation owns its declaration label and description. An Execution
+    # is a concrete binding of that declaration, so it does not duplicate them.
+    assert execution.name is None
+    assert execution.description is None
 
 
 def test_observe_run_publishes_decorated_cross_computation_artifact_set(
@@ -711,7 +715,8 @@ def test_oclp_run_materializes_a_release_manifest_from_exact_handles(
         mode="json"
     )
     assert manifest["artifact_set"]["record"] == release.artifact_set.model_dump(
-        mode="json"
+        mode="json",
+        exclude={"description"},
     )
     manifest_members = manifest["artifact_set"]["record"]["members"]
     assert [member["name"] for member in manifest_members] == [
@@ -1038,6 +1043,152 @@ def test_computation_decorator_materializes_required_evidence() -> None:
     )
 
 
+@computation(
+    name="Describe report",
+    description_from_docstring=True,
+)
+def describe_report(value: int) -> int:
+    """
+    Normalize one report value for the downstream quality gate.
+
+    Preserve its numeric value while making the declared purpose explicit.
+    """
+
+    return value
+
+
+@computation(
+    name="Explicit description wins",
+    description="The application-selected durable explanation.",
+    description_from_docstring=True,
+)
+def explicit_description_wins(value: int) -> int:
+    """This docstring must not replace the explicit description."""
+
+    return value
+
+
+@json_artifact(
+    name="Described source configuration",
+    description_from_docstring=True,
+    annotations={"example.org/source": "fixture"},
+)
+def described_source_configuration() -> dict[str, str]:
+    """Configuration selected as the durable source for this demonstration."""
+
+    return {"source": "described"}
+
+
+@computation(
+    name="Publish described report",
+    outputs={
+        "report": JsonArtifact(
+            name="Described report",
+            description="JSON report persisted for a downstream consumer.",
+        )
+    },
+)
+def publish_described_report() -> dict[str, dict[str, str]]:
+    return {"report": {"status": "ready"}}
+
+
+@evidence(
+    name="Described report quality",
+    description_from_docstring=True,
+)
+def described_report_quality(value: int) -> str:
+    """Checks that the report has a positive quality score."""
+
+    return "pass" if value > 0 else "fail"
+
+
+def test_descriptions_are_opt_in_and_docstrings_are_normalized() -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+
+    assert describe_report(3) == 3
+    assert computation_template(describe_report).description == (
+        "Normalize one report value for the downstream quality gate.\n\n"
+        "Preserve its numeric value while making the declared purpose explicit."
+    )
+    assert computation_record(describe_report, source=source).description == (
+        "Normalize one report value for the downstream quality gate.\n\n"
+        "Preserve its numeric value while making the declared purpose explicit."
+    )
+    assert computation_template(explicit_description_wins).description == (
+        "The application-selected durable explanation."
+    )
+
+    evidence_record = evaluate_evidence(
+        described_report_quality,
+        1,
+        subject=RecordReference(id=_id("execution:described")),
+        source=source,
+        id=_id("evidence:described"),
+        observed_at="2026-08-30T18:00:00Z",
+    )
+    assert evidence_record.description == (
+        "Checks that the report has a positive quality score."
+    )
+
+
+def test_artifact_descriptions_persist_separately_from_annotations(tmp_path) -> None:
+    source = GitSource(
+        repository="https://github.com/example/reports.git",
+        commit="a" * 40,
+    )
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with OclpRun(publisher=publisher, source=source) as observed:
+            source_artifact = described_source_configuration()
+            result = publish_described_report()
+            output_artifact = observed.outputs_for(result)["report"]
+
+    assert source_artifact.artifact.description == (
+        "Configuration selected as the durable source for this demonstration."
+    )
+    assert source_artifact.artifact.annotations == {"example.org/source": "fixture"}
+    assert output_artifact.artifact.description == (
+        "JSON report persisted for a downstream consumer."
+    )
+
+
+def test_requested_docstrings_must_be_present_and_explicit_descriptions_win() -> None:
+    with pytest.raises(ValueError, match="requires a non-empty callable docstring"):
+
+        @computation(
+            name="Missing Computation description",
+            description_from_docstring=True,
+        )
+        def missing_computation_docstring() -> None: ...
+
+    with pytest.raises(ValueError, match="requires a non-empty callable docstring"):
+
+        @json_artifact(
+            name="Missing Artifact description",
+            description_from_docstring=True,
+        )
+        def missing_artifact_docstring() -> dict[str, bool]:
+            return {"missing": True}
+
+    @json_artifact(
+        name="Explicit Artifact description",
+        description="Explicit descriptions take precedence.",
+        description_from_docstring=True,
+    )
+    def explicit_artifact_description() -> dict[str, bool]:
+        return {"explicit": True}
+
+    assert artifact_type(explicit_artifact_description).description == (
+        "Explicit descriptions take precedence."
+    )
+
+
 def test_evidence_decorator_evaluates_and_binds_the_source_bound_evaluator() -> None:
     source = GitSource(
         repository="https://github.com/example/reports.git",
@@ -1168,9 +1319,9 @@ def test_run_can_raise_after_publishing_failed_required_evidence(tmp_path) -> No
 
 def test_run_evidence_policy_continues_by_default(tmp_path) -> None:
     @run(name="Continue evidence run")
-    def workflow() -> None:
+    def workflow() -> dict[str, bool]:
         publish_gated_value(value=0)
-        downstream_after_gate()
+        return downstream_after_gate()
 
     source = GitSource(
         repository="https://github.com/example/reports.git",
@@ -1181,14 +1332,18 @@ def test_run_evidence_policy_continues_by_default(tmp_path) -> None:
         record_root=tmp_path / "records",
         payload_root=tmp_path / "payloads",
     ) as publisher:
-        with observe_run(workflow, publisher=publisher, source=source):
-            workflow()
+        with observe_run(workflow, publisher=publisher, source=source) as observed:
+            result = workflow()
+            downstream_execution_ref = observed.execution_for(result)
         records = publisher.records()
 
-    assert any(
-        isinstance(record, Execution) and record.name == "Downstream after gate"
+    downstream_execution = next(
+        record
         for record in records
+        if isinstance(record, Execution) and record.id == downstream_execution_ref.id
     )
+    assert downstream_execution.name is None
+    assert downstream_execution.description is None
 
 
 def test_run_evidence_policy_exposes_every_required_evidence_outcome(tmp_path) -> None:

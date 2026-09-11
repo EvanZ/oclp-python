@@ -921,8 +921,6 @@ class OclpRun:
         except BaseException as error:
             execution, execution_ref = self._publish_execution(
                 computation_ref=computation_ref,
-                computation_name=computation.name,
-                suffix=suffix,
                 parameters=parameters,
                 inputs=inputs,
                 outputs=None,
@@ -973,8 +971,6 @@ class OclpRun:
         except BaseException as error:
             execution, execution_ref = self._publish_execution(
                 computation_ref=computation_ref,
-                computation_name=computation.name,
-                suffix=suffix,
                 parameters=parameters,
                 inputs=inputs,
                 outputs=None,
@@ -992,8 +988,6 @@ class OclpRun:
 
         execution, execution_ref = self._publish_execution(
             computation_ref=computation_ref,
-            computation_name=computation.name,
-            suffix=suffix,
             parameters=parameters,
             inputs=inputs,
             outputs=outputs,
@@ -1270,8 +1264,6 @@ class OclpRun:
         self,
         *,
         computation_ref: RecordReference,
-        computation_name: str,
-        suffix: str,
         parameters: dict[str, JsonValue],
         inputs: dict[str, tuple[RecordReference, ...]],
         outputs: dict[str, tuple[RecordReference, ...]] | None,
@@ -1279,9 +1271,6 @@ class OclpRun:
     ) -> tuple[Execution, RecordReference]:
         execution = Execution(
             id=new_record_id(),
-            # Executions inherit the explicit, application-owned Computation
-            # label. IDs and run profiles identify the exact call.
-            name=computation_name,
             profiles=self.profiles,
             computation=computation_ref,
             parent_execution=self.parent_execution,

@@ -56,6 +56,7 @@ def test_sklearn_artifact_round_trips_through_sdk_owned_persistence(tmp_path) ->
             trained = train_sklearn()
             model_artifact = observed.outputs_for(trained)["model"]
             prediction = score_sklearn(model_artifact)
+            score_execution_ref = observed.execution_for(prediction)
         records = publisher.records()
 
     assert isinstance(prediction, float)
@@ -64,6 +65,8 @@ def test_sklearn_artifact_round_trips_through_sdk_owned_persistence(tmp_path) ->
     score_execution = next(
         record
         for record in records
-        if isinstance(record, Execution) and record.name == "Score sklearn"
+        if isinstance(record, Execution) and record.id == score_execution_ref.id
     )
+    assert score_execution.name is None
+    assert score_execution.description is None
     assert score_execution.inputs == {"model": (model_artifact.reference,)}

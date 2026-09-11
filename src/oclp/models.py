@@ -175,6 +175,7 @@ class CoreRecord(OclpModel):
     oclp_version: Literal["0.3.0-draft"] = OCLP_DRAFT_VERSION
     id: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1)
+    description: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
 

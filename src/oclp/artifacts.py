@@ -35,6 +35,7 @@ from typing import (
 
 from pydantic import Field
 
+from oclp._descriptions import resolve_callable_description
 from oclp.models import JsonValue, OclpModel, ProfileBindings
 
 if TYPE_CHECKING:
@@ -526,6 +527,7 @@ class ArtifactType(OclpModel, ABC):
     # Keep the field optional for that use; every record-producing path
     # validates that an application supplied it rather than inventing a label.
     name: str | None = Field(default=None, min_length=1)
+    description: str | None = Field(default=None, min_length=1)
     path: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
@@ -623,6 +625,7 @@ class CsvArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -630,6 +633,8 @@ class CsvArtifact(ArtifactType):
 def csv_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     index: bool = False,
     lineterminator: str = "\n",
     na_rep: str = "",
@@ -648,9 +653,10 @@ def csv_artifact(
     to a Computation parameter's annotated in-memory type.
     """
 
-    decorator = _decorate_artifact(
+    decorator = _artifact_decorator_for(
         CsvArtifact(
             name=name,
+            description=description,
             index=index,
             lineterminator=lineterminator,
             na_rep=na_rep,
@@ -660,7 +666,8 @@ def csv_artifact(
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
     return cast(
         Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]],
@@ -712,6 +719,7 @@ class ParquetArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -719,6 +727,8 @@ class ParquetArtifact(ArtifactType):
 def parquet_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     index: bool = False,
     compression: Literal["snappy", "gzip", "brotli", "lz4", "zstd"] | None = "zstd",
     profiles: ProfileBindings | None = None,
@@ -730,12 +740,14 @@ def parquet_artifact(
     decorator = _decorate_artifact(
         ParquetArtifact(
             name=name,
+            description=description,
             index=index,
             compression=compression,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
     return cast(
         Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]],
@@ -780,9 +792,10 @@ class JsonArtifact(ArtifactType):
                 content=text.encode("utf-8"),
                 media_type=self.media_type,
                 created_at=created_at,
-                profiles=self.profiles,
-                annotations=self.annotations,
-                schema_uri=self.schema_uri,
+            profiles=self.profiles,
+            annotations=self.annotations,
+            description=self.description,
+            schema_uri=self.schema_uri,
             )
         return publisher.json_artifact(
             artifact_id=artifact_id,
@@ -792,6 +805,7 @@ class JsonArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -850,6 +864,7 @@ class JsonLinesArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -903,6 +918,7 @@ class ArrowIpcArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -942,6 +958,7 @@ class NpyArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1001,6 +1018,7 @@ class NpzArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1056,6 +1074,7 @@ class YamlArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1103,6 +1122,7 @@ class TomlArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1146,6 +1166,7 @@ class XmlArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1177,6 +1198,7 @@ class BytesArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1212,6 +1234,7 @@ class FileArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1257,6 +1280,7 @@ class CatBoostModelArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1327,6 +1351,7 @@ class XGBoostModelArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1403,6 +1428,7 @@ class LightGBMModelArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1478,6 +1504,7 @@ class SklearnModelArtifact(ArtifactType):
             created_at=created_at,
             profiles=self.profiles,
             annotations=self.annotations,
+            description=self.description,
             schema_uri=self.schema_uri,
         )
 
@@ -1559,6 +1586,8 @@ DEFAULT_ARTIFACT_ADAPTERS = ArtifactAdapterRegistry(
 def json_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
@@ -1572,14 +1601,16 @@ def json_artifact(
     consumers.
     """
 
-    decorator = _decorate_artifact(
+    decorator = _artifact_decorator_for(
         JsonArtifact(
             name=name,
+            description=description,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
             serialization=serialization,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
     return cast(
         Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]],
@@ -1590,6 +1621,8 @@ def json_artifact(
 def json_lines_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     newline: Literal["\n", "\r\n"] = "\n",
     sort_keys: bool = True,
     ensure_ascii: bool = False,
@@ -1602,19 +1635,23 @@ def json_lines_artifact(
     return _artifact_decorator_for(
         JsonLinesArtifact(
             name=name,
+            description=description,
             newline=newline,
             sort_keys=sort_keys,
             ensure_ascii=ensure_ascii,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
 
 
 def arrow_ipc_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     preserve_index: bool = False,
     compression: Literal["lz4", "zstd"] | None = "zstd",
     profiles: ProfileBindings | None = None,
@@ -1626,18 +1663,22 @@ def arrow_ipc_artifact(
     return _artifact_decorator_for(
         ArrowIpcArtifact(
             name=name,
+            description=description,
             preserve_index=preserve_index,
             compression=compression,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
 
 
 def npy_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
@@ -1647,16 +1688,20 @@ def npy_artifact(
     return _artifact_decorator_for(
         NpyArtifact(
             name=name,
+            description=description,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
 
 
 def npz_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     compression: Literal["stored", "deflated"] = "deflated",
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
@@ -1667,17 +1712,21 @@ def npz_artifact(
     return _artifact_decorator_for(
         NpzArtifact(
             name=name,
+            description=description,
             compression=compression,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
 
 
 def yaml_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     indent: int = 2,
     width: int = 88,
     sort_keys: bool = True,
@@ -1690,19 +1739,23 @@ def yaml_artifact(
     return _artifact_decorator_for(
         YamlArtifact(
             name=name,
+            description=description,
             indent=indent,
             width=width,
             sort_keys=sort_keys,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
 
 
 def toml_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     multiline_strings: bool = False,
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
@@ -1713,17 +1766,21 @@ def toml_artifact(
     return _artifact_decorator_for(
         TomlArtifact(
             name=name,
+            description=description,
             multiline_strings=multiline_strings,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
 
 
 def xml_artifact(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
@@ -1737,21 +1794,28 @@ def xml_artifact(
     return _artifact_decorator_for(
         XmlArtifact(
             name=name,
+            description=description,
             profiles=profiles,
             annotations=annotations or {},
             schema_uri=schema_uri,
-        )
+        ),
+        description_from_docstring=description_from_docstring,
     )
 
 
 def _artifact_decorator_for(
     artifact: ArtifactType,
+    *,
+    description_from_docstring: bool = False,
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Return a precisely typed wrapper around the common decorator machinery."""
 
     return cast(
         Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]],
-        _decorate_artifact(artifact),
+        _decorate_artifact(
+            artifact,
+            description_from_docstring=description_from_docstring,
+        ),
     )
 
 
@@ -1767,16 +1831,28 @@ def artifact_type(function: Callable[..., object]) -> ArtifactType:
 
 def _decorate_artifact(
     artifact: ArtifactType,
+    *,
+    description_from_docstring: bool = False,
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     def decorate(
         function: Callable[Parameters, object],
     ) -> Callable[Parameters, ArtifactHandle]:
         if not callable(function):
             raise TypeError("Artifact decorators can only decorate a callable")
+        resolved_artifact = artifact.model_copy(
+            update={
+                "description": resolve_callable_description(
+                    description=artifact.description,
+                    description_from_docstring=description_from_docstring,
+                    function=function,
+                    decorator="Artifact decorator",
+                )
+            }
+        )
         if getattr(function, _ARTIFACT_TYPE_ATTRIBUTE, None) is not None:
             raise ValueError("a callable can have only one OCLP Artifact type")
         try:
-            setattr(function, _ARTIFACT_TYPE_ATTRIBUTE, artifact)
+            setattr(function, _ARTIFACT_TYPE_ATTRIBUTE, resolved_artifact)
         except (AttributeError, TypeError) as error:
             raise TypeError(
                 "Artifact decorators require a callable that accepts attached metadata"
@@ -1798,10 +1874,10 @@ def _decorate_artifact(
                 )
             return cast(
                 ArtifactHandle,
-                run.acquire(function, artifact, tuple(args), kwargs),
+                run.acquire(function, resolved_artifact, tuple(args), kwargs),
             )
 
-        setattr(observed, _ARTIFACT_TYPE_ATTRIBUTE, artifact)
+        setattr(observed, _ARTIFACT_TYPE_ATTRIBUTE, resolved_artifact)
         return observed
 
     return decorate

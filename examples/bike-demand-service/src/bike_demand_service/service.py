@@ -79,6 +79,7 @@ class PredictionResponse(BaseModel):
 
 @json_artifact(
     name="Bike demand prediction request",
+    description_from_docstring=True,
 )
 def persist_prediction_request(*, payload: dict[str, object]) -> dict[str, object]:
     """Persist the accepted HTTP payload as an external input Artifact."""
@@ -86,7 +87,7 @@ def persist_prediction_request(*, payload: dict[str, object]) -> dict[str, objec
     return payload
 
 
-@evidence(name="Prediction response validation")
+@evidence(name="Prediction response validation", description_from_docstring=True)
 def prediction_response_validation(
     prediction_response: dict[str, object],
 ) -> Literal["pass", "fail", "error"]:
@@ -109,6 +110,7 @@ def prediction_response_validation(
 
 @computation(
     name="Bike demand prediction",
+    description_from_docstring=True,
     inputs={
         "model_release": artifact_set_input(
             {
@@ -121,6 +123,9 @@ def prediction_response_validation(
     outputs={
         "prediction_response": JsonArtifact(
             name="Bike demand prediction response",
+            description=(
+                "A release-pinned bike-demand prediction returned to the HTTP caller."
+            ),
         ),
     },
     requires=(prediction_response_validation,),

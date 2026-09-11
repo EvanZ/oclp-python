@@ -180,6 +180,10 @@ def test_artifact_decorated_ingest_persists_its_returned_dataframe_as_source_sna
     assert isinstance(template, CsvArtifact)
     assert template.index is False
     assert template.lineterminator == "\n"
+    assert (
+        template.description
+        == "Acquire UCI's hourly Bike Sharing data as a persisted CSV Artifact."
+    )
 
 
 def test_source_factory_adapts_csv_parquet_and_table_json_to_equivalent_frames(
@@ -290,6 +294,10 @@ def test_preparation_binds_and_adapts_the_csv_source_artifact(
         "source_snapshot": CsvArtifact,
         "training_plan": JsonArtifact,
     }
+    assert (
+        computation_template(prepare_features).description
+        == "Create time-ordered folds while excluding target-derived leakage fields."
+    )
 
 
 def test_preparation_rejects_an_artifact_handle_of_the_wrong_representation(

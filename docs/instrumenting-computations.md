@@ -7,7 +7,7 @@ turn a declared returned value into a real Artifact and Execution.
 
 The normative field contract is the [OCLP specification](https://evanz.github.io/open-computation-lifecycle/protocol/specification/).
 
-## Names are application-owned labels
+## Names, descriptions, and annotations are application-owned metadata
 
 Every record-producing SDK declaration requires an application-supplied
 `name`: Computations, Evidence evaluators, Artifact-producing decorators,
@@ -29,6 +29,27 @@ Publishing the same bytes again produces a distinct Artifact record UUID; a
 catalog may still use the payload digest to find equivalent content and share
 retrieval locations. Mutating any declared record field is never a revision of
 an existing UUID—it must produce a new record.
+
+Use `name` for a concise label, `description` for longer plain-text human
+explanation, and `annotations` for application-specific structured metadata.
+For the one-callable/one-record decorators (`@computation`, `@evidence`, and
+Artifact acquisition decorators), either supply `description="..."` or opt in
+to `description_from_docstring=True`:
+
+```python
+@computation(
+    name="Prepare report",
+    description_from_docstring=True,
+)
+def prepare_report() -> None:
+    """Create the normalized report used by the quality gate."""
+```
+
+The SDK calls `inspect.getdoc()` only for that explicit opt-in. A supplied
+`description` takes precedence, and an opted-in callable with no non-empty
+docstring fails while decorators are applied. Ordinary `#` comments are not
+runtime metadata and are never inferred. For multiple output Artifacts, set an
+explicit `description` on each `ArtifactType` declaration instead.
 
 ## Declare the computation and its success check
 

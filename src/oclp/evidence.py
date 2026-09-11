@@ -8,6 +8,7 @@ from typing import Literal, TypeVar, cast
 
 from pydantic import Field, JsonValue
 
+from oclp._descriptions import resolve_callable_description
 from oclp.models import (
     Diagnostic,
     Evidence,
@@ -26,6 +27,7 @@ class EvidenceTemplate(OclpModel):
     """Static evaluator metadata attached to a callable by ``@evidence``."""
 
     name: str = Field(min_length=1)
+    description: str | None = Field(default=None, min_length=1)
     profiles: ProfileBindings | None = None
     annotations: dict[str, JsonValue] = Field(default_factory=dict)
     evaluator_kind: Literal["python-callable"] = "python-callable"
@@ -34,6 +36,8 @@ class EvidenceTemplate(OclpModel):
 def evidence(
     *,
     name: str,
+    description: str | None = None,
+    description_from_docstring: bool = False,
     profiles: dict[str, dict[str, JsonValue]] | None = None,
     annotations: dict[str, JsonValue] | None = None,
 ) -> Callable[[CallableT], CallableT]:
@@ -45,15 +49,21 @@ def evidence(
     to the exact evaluator implementation and Execution.
     """
 
-    template = EvidenceTemplate(
-        name=name,
-        profiles=profiles,
-        annotations=annotations or {},
-    )
-
     def decorate(function: CallableT) -> CallableT:
         if not callable(function):
             raise TypeError("@evidence can only decorate a callable")
+        resolved_description = resolve_callable_description(
+            description=description,
+            description_from_docstring=description_from_docstring,
+            function=function,
+            decorator="@evidence",
+        )
+        template = EvidenceTemplate(
+            name=name,
+            description=resolved_description,
+            profiles=profiles,
+            annotations=annotations or {},
+        )
         if getattr(function, _EVIDENCE_TEMPLATE_ATTRIBUTE, None) is not None:
             raise ValueError("a callable can have only one OCLP Evidence template")
         try:
@@ -114,6 +124,7 @@ def evaluate_evidence(
         return _error_evidence(
             id=id,
             name=name or template.name,
+            description=template.description,
             subject=subject,
             evaluator=evaluator,
             observed_at=observed_at,
@@ -131,6 +142,7 @@ def evaluate_evidence(
         return _error_evidence(
             id=id,
             name=name or template.name,
+            description=template.description,
             subject=subject,
             evaluator=evaluator,
             observed_at=observed_at,
@@ -142,6 +154,7 @@ def evaluate_evidence(
     return Evidence(
         id=id,
         name=name or template.name,
+        description=template.description,
         subject=subject,
         evaluator=evaluator,
         outcome=outcome,
@@ -176,6 +189,7 @@ def _error_evidence(
     *,
     id: str,
     name: str | None,
+    description: str | None,
     subject: RecordReference,
     evaluator: Implementation,
     observed_at: datetime,
@@ -185,6 +199,7 @@ def _error_evidence(
     return Evidence(
         id=id,
         name=name,
+        description=description,
         subject=subject,
         evaluator=evaluator,
         outcome="error",

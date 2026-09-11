@@ -14,6 +14,12 @@ The SDK exposes immutable Pydantic models for the six OCLP core record kinds:
 The API names are Python conveniences. Field semantics, required fields, and
 conformance requirements belong to the [normative specification](https://evanz.github.io/open-computation-lifecycle/protocol/specification/).
 
+Every Core record may carry a concise `name`, an optional plain-text
+`description`, and structured application `annotations`. These are distinct:
+the description is universal human-facing explanation, while annotations carry
+application-defined JSON semantics. A supplied description participates in
+canonical record bytes, so changing it requires a fresh UUID record.
+
 ## Core API
 
 ```python

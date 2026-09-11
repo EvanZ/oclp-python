@@ -132,6 +132,14 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     }
     assert request_artifact.schema_uri is None
     assert response_artifact.schema_uri is None
+    assert (
+        request_artifact.description
+        == "Persist the accepted HTTP payload as an external input Artifact."
+    )
+    assert (
+        response_artifact.description
+        == "A release-pinned bike-demand prediction returned to the HTTP caller."
+    )
     evidence = [
         record
         for record in records
@@ -141,6 +149,10 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     assert [(record.name, record.outcome) for record in evidence] == [
         ("Prediction response validation", "pass")
     ]
+    assert (
+        evidence[0].description
+        == "Confirm that a produced inference response is safe to return."
+    )
     events = [
         record
         for record in records

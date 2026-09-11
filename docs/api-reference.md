@@ -45,6 +45,21 @@ references, Event chronology, and Artifact bindings consistently. Supporting
 Core models include `Diagnostic`, `ParameterDefinition`, `GitCheckout`, and
 `ArtifactSource`; see [records and canonicalization](records.md).
 
+### `name`, `description`, and `annotations`
+
+`name` is a concise application-owned display label. `description` is optional
+plain-text explanation intended to help a human understand a durable record;
+it is not Markdown or HTML. `annotations` remain application-defined,
+structured JSON metadata. All three are immutable record fields when supplied.
+
+Where one callable declares one Core record, `@computation`, `@evidence`, and
+Artifact acquisition decorators accept either `description="..."` or the
+explicit opt-in `description_from_docstring=True`. The SDK uses
+`inspect.getdoc()` only when that flag is set. An explicit description wins;
+when the flag is set without an explicit value, the callable must have a
+non-empty docstring or declaration fails. The SDK never treats ordinary `#`
+comments as record metadata.
+
 ## Artifact boundaries
 
 ### `ArtifactType`
@@ -66,8 +81,10 @@ def summarize_demand(features) -> dict[str, object]:
 ```
 
 Input classes validate an Artifact media type. Output instances additionally
-carry a required application `name` and may contain `annotations`,
-`schema_uri`, and serialization options.
+carry a required application `name` and may contain an explicit `description`,
+`annotations`, `schema_uri`, and serialization options. For multi-output
+Computations, set each output's description on its own `ArtifactType` instance;
+a function docstring is not shared across several Artifact records.
 
 For output metadata that depends on one call's ordinary parameters, provide an
 `annotation_factory`. It declares the parameters it needs by name; the SDK
@@ -144,8 +161,10 @@ return an `ArtifactHandle`.
 from oclp import json_artifact
 
 
-@json_artifact(name="Training plan")
+@json_artifact(name="Training plan", description_from_docstring=True)
 def read_training_plan() -> dict[str, object]:
+    """Declared temporal-fold configuration used to prepare model inputs."""
+
     return {"folds": 3}
 ```
 
@@ -166,6 +185,11 @@ also supplies `BytesArtifact`, `FileArtifact`, `CatBoostModelArtifact`,
 `XGBoostModelArtifact`, `LightGBMModelArtifact`, and `SklearnModelArtifact`.
 See [artifact formats and integrations](integrations.md) for value types,
 media types, options, and package extras.
+
+All acquisition decorators accept `description=` and
+`description_from_docstring=`. Those fields affect only the durable Artifact
+record; the wrapped callable remains an ordinary function outside an active
+`OclpRun`.
 
 ### Handles and adapters
 
@@ -200,6 +224,8 @@ or its `ArtifactIntegrityError` subtype.
 ```python
 @computation(
     name="...",
+    description=None,
+    description_from_docstring=False,
     input_ports=(),
     inputs=None,
     output_ports=(),
@@ -212,7 +238,9 @@ or its `ArtifactIntegrityError` subtype.
 def work(...): ...
 ```
 
-`name` is required and application-owned. `inputs` maps parameter/port names
+`name` is required and application-owned. `description` may be explicit or,
+when `description_from_docstring=True`, be the normalized callable docstring.
+`inputs` maps parameter/port names
 to an `ArtifactType`, `many(ArtifactType)`, or `artifact_set_input(...)`.
 `outputs` maps output-port names to named `ArtifactType` instances. In an
 active runtime, the SDK emits one source-bound Computation per callable per
@@ -266,7 +294,13 @@ defaults to `"artifact_set"`.
 ## Evidence
 
 ```python
-@evidence(name="Candidate quality", profiles=None, annotations=None)
+@evidence(
+    name="Candidate quality",
+    description=None,
+    description_from_docstring=False,
+    profiles=None,
+    annotations=None,
+)
 def candidate_quality(result) -> Literal["pass", "fail", "error"]:
     return "pass"
 ```

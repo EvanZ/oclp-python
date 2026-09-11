@@ -40,6 +40,7 @@ def _temporal_fold_model_annotations(*, fold_number: int) -> dict[str, int]:
 
 @evidence(
     name="Temporal validation quality",
+    description_from_docstring=True,
 )
 def temporal_validation_quality(
     evaluation: dict[str, float | int],
@@ -58,6 +59,7 @@ def temporal_validation_quality(
 
 @evidence(
     name="Holdout response validation",
+    description_from_docstring=True,
 )
 def holdout_response(
     metrics: dict[str, float | int],
@@ -73,6 +75,7 @@ def holdout_response(
 
 @json_artifact(
     name="Bike demand training plan",
+    description_from_docstring=True,
 )
 def create_training_plan(
     *, materialization_id: str, fold_count: int
@@ -103,6 +106,7 @@ def create_training_plan(
 )
 @computation(
     name="Train bike demand fold",
+    description_from_docstring=True,
     inputs={
         "feature_table": CsvArtifact,
         "fold_definition": JsonArtifact,
@@ -110,13 +114,18 @@ def create_training_plan(
     outputs={
         "model": CatBoostModelArtifact(
             name="Temporal fold model",
+            description="CatBoost regressor fitted for one temporal validation fold.",
             annotation_factory=_temporal_fold_model_annotations,
         ),
         "validation_predictions": CsvArtifact(
             name="Validation predictions",
+            description=(
+                "Predictions and observed demand for one temporal validation window."
+            ),
         ),
         "metrics": JsonArtifact(
             name="Validation metrics",
+            description="MAE, RMSE, and row count for one temporal validation fold.",
         ),
     },
 )
@@ -197,11 +206,21 @@ def _fold_for_number(
 @mlflow(metrics=(MlflowMetrics(output_port="evaluation", prefix="candidate"),))
 @computation(
     name="Evaluate bike demand candidate",
+    description_from_docstring=True,
     inputs={"fold_predictions": many(CsvArtifact)},
     outputs={
-        "evaluation": JsonArtifact(name="Candidate evaluation"),
+        "evaluation": JsonArtifact(
+            name="Candidate evaluation",
+            description=(
+                "Aggregated temporal validation metrics and the release quality "
+                "threshold."
+            ),
+        ),
         "training_config": JsonArtifact(
-            name="Final training configuration"
+            name="Final training configuration",
+            description=(
+                "CatBoost hyperparameters selected for the final release model."
+            ),
         ),
     },
     requires=(temporal_validation_quality,),
@@ -233,6 +252,7 @@ def evaluate_folds(
 )
 @computation(
     name="Train final bike demand model",
+    description_from_docstring=True,
     inputs={
         "feature_table": CsvArtifact,
         "training_config": JsonArtifact,
@@ -240,6 +260,9 @@ def evaluate_folds(
     outputs={
         "model": CatBoostModelArtifact(
             name="Final CatBoost model",
+            description=(
+                "Release-candidate CatBoost model trained on all pre-holdout rows."
+            ),
         ),
     },
 )
@@ -268,13 +291,22 @@ def train_final_model(
 @mlflow(metrics=(MlflowMetrics(output_port="metrics", prefix="holdout"),))
 @computation(
     name="Score bike demand holdout",
+    description_from_docstring=True,
     inputs={
         "model": CatBoostModelArtifact,
         "feature_table": CsvArtifact,
     },
     outputs={
-        "predictions": CsvArtifact(name="Holdout predictions"),
-        "metrics": JsonArtifact(name="Holdout metrics"),
+        "predictions": CsvArtifact(
+            name="Holdout predictions",
+            description=(
+                "Predictions and observed demand for the untouched temporal holdout."
+            ),
+        ),
+        "metrics": JsonArtifact(
+            name="Holdout metrics",
+            description="MAE, RMSE, and row count for the untouched temporal holdout.",
+        ),
     },
     requires=(holdout_response,),
 )

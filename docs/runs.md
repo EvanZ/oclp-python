@@ -246,6 +246,14 @@ The UUID identifies one concrete invocation. `run_name` is its concise display
 label. The profile groups Executions for navigation only; actual dataflow
 continues to be the explicit Artifact → Execution → Artifact graph.
 
+The SDK does not copy a Computation's `name` or `description` onto every
+Execution. The Computation is the reusable, self-describing declaration;
+an Execution records one concrete set of bindings to it. A viewer can derive a
+readable execution label through `Execution.computation` while the immutable
+Execution record keeps both fields `null` by default. Applications may still
+supply execution-specific text explicitly when it carries information that the
+Computation does not.
+
 `OclpRun` remains available when an application wants scoped automatic
 observation without claiming a batch run—for example, a request-scoped
 inference service that is represented through its service-level projection.

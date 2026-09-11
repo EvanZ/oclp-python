@@ -66,6 +66,7 @@ def _fetch_source_frame(dataset_id: int) -> pd.DataFrame:
 
 @csv_artifact(
     name="UCI Bike Sharing source (CSV)",
+    description_from_docstring=True,
     index=False,
     lineterminator="\n",
 )
@@ -79,6 +80,7 @@ def download_source_csv(
 
 @parquet_artifact(
     name="UCI Bike Sharing source (Parquet)",
+    description_from_docstring=True,
     index=False,
     compression="zstd",
 )
@@ -92,6 +94,7 @@ def download_source_parquet(
 
 @json_artifact(
     name="UCI Bike Sharing source (JSON)",
+    description_from_docstring=True,
     serialization="pandas-table",
 )
 def download_source_json(
@@ -133,6 +136,7 @@ def download_source_artifact(
 @mlflow(metrics=(MlflowMetrics(output_port="data_metrics", prefix="data"),))
 @computation(
     name="Prepare bike demand features",
+    description_from_docstring=True,
     inputs={
         "source_snapshot": CsvArtifact,
         "training_plan": JsonArtifact,
@@ -140,18 +144,32 @@ def download_source_artifact(
     outputs={
         "features": CsvArtifact(
             name="Bike demand features",
+            description=(
+                "Time-indexed features and demand target prepared for training and "
+                "holdout scoring."
+            ),
             path="prepared/features.csv",
         ),
         "fold_definition": JsonArtifact(
             name="Temporal fold definition",
+            description=(
+                "TimeSeriesSplit fold windows used for temporal model validation."
+            ),
             path="prepared/temporal-folds.json",
         ),
         "feature_contract": JsonArtifact(
             name="Feature contract",
+            description=(
+                "Serving contract defining the feature columns, categorical columns, "
+                "target, and holdout boundary."
+            ),
             path="prepared/feature-contract.json",
         ),
         "data_metrics": JsonArtifact(
             name="Training data metrics",
+            description=(
+                "Counts describing the source, prepared, training, and holdout rows."
+            ),
             path="prepared/data-metrics.json",
         ),
     },
