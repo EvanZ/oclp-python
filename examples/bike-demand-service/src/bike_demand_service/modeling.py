@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from math import isfinite, sqrt
 from typing import Literal
 
 import pandas as pd
 from catboost import CatBoostRegressor
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from oclp import (
+    BytesArtifact,
     CatBoostModelArtifact,
     CsvArtifact,
     JsonArtifact,
@@ -327,6 +331,116 @@ def score_holdout(
         }
     )
     return {"predictions": predictions, "metrics": _metrics(predictions)}
+
+
+@mlflow(payloads=("chart",))
+@computation(
+    name="Chart temporal validation quality",
+    description_from_docstring=True,
+    inputs={"fold_predictions": many(CsvArtifact)},
+    outputs={
+        "chart": BytesArtifact(
+            name="Temporal validation quality chart",
+            description=(
+                "Per-fold validation RMSE compared with the configured quality "
+                "threshold."
+            ),
+            media_type="image/png",
+            suffix="png",
+        )
+    },
+)
+def chart_temporal_validation_quality(
+    fold_predictions: tuple[pd.DataFrame, ...],
+    *,
+    temporal_validation_rmse_max: float,
+) -> dict[str, bytes]:
+    """Render the temporal-fold RMSE gate as a deterministic PNG Artifact."""
+
+    if not fold_predictions:
+        raise ValueError("at least one fold prediction Artifact is required")
+    fold_metrics = [
+        (int(predictions["fold"].iloc[0]), float(_metrics(predictions)["rmse"]))
+        for predictions in fold_predictions
+    ]
+    fold_metrics.sort(key=lambda item: item[0])
+    fold_numbers, rmse_values = zip(*fold_metrics, strict=True)
+
+    figure = Figure(figsize=(7.2, 4.2), dpi=144, layout="constrained")
+    axis = figure.subplots()
+    axis.plot(fold_numbers, rmse_values, color="#2a9d8f", marker="o", linewidth=2)
+    axis.axhline(
+        temporal_validation_rmse_max,
+        color="#e76f51",
+        linestyle="--",
+        linewidth=1.5,
+        label="Validation threshold",
+    )
+    axis.set(
+        title="Temporal validation RMSE",
+        xlabel="Temporal fold",
+        ylabel="RMSE",
+        xticks=fold_numbers,
+    )
+    axis.grid(axis="y", alpha=0.28)
+    axis.legend(frameon=False, loc="best")
+    return {"chart": _png_bytes(figure)}
+
+
+@mlflow(payloads=("chart",))
+@computation(
+    name="Chart holdout demand forecast",
+    description_from_docstring=True,
+    inputs={"predictions": CsvArtifact},
+    outputs={
+        "chart": BytesArtifact(
+            name="Holdout demand forecast chart",
+            description=(
+                "Observed and predicted hourly demand across the untouched "
+                "holdout window."
+            ),
+            media_type="image/png",
+            suffix="png",
+        )
+    },
+)
+def chart_holdout_demand_forecast(
+    predictions: pd.DataFrame,
+) -> dict[str, bytes]:
+    """Render observed versus predicted holdout demand as a PNG Artifact."""
+
+    if predictions.empty:
+        raise ValueError("holdout predictions must contain at least one row")
+    timestamps = pd.to_datetime(predictions[TIMESTAMP_COLUMN], utc=True)
+    figure = Figure(figsize=(8.4, 4.2), dpi=144, layout="constrained")
+    axis = figure.subplots()
+    axis.plot(timestamps, predictions["actual"], color="#264653", label="Observed")
+    axis.plot(
+        timestamps,
+        predictions["prediction"],
+        color="#e9c46a",
+        label="Predicted",
+    )
+    axis.set(
+        title="Holdout bike demand forecast",
+        xlabel="Holdout timestamp",
+        ylabel="Hourly demand",
+    )
+    axis.grid(axis="y", alpha=0.28)
+    axis.legend(frameon=False, loc="best")
+    figure.autofmt_xdate(rotation=25, ha="right")
+    return {"chart": _png_bytes(figure)}
+
+
+def _png_bytes(figure: Figure) -> bytes:
+    """Serialize a fixed-size Matplotlib figure without host-specific metadata."""
+
+    output = BytesIO()
+    FigureCanvasAgg(figure).print_png(
+        output,
+        metadata={"Software": "OCLP bike-demand example", "Creation Time": None},
+    )
+    return output.getvalue()
 
 
 def _training_config() -> dict[str, float | int | str]:

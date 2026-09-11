@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pandas as pd
 import pytest
@@ -12,6 +13,7 @@ from oclp import (
     Artifact,
     ArtifactHandle,
     ArtifactIntegrityError,
+    BytesArtifact,
     CsvArtifact,
     GitSource,
     JsonArtifact,
@@ -33,6 +35,8 @@ from bike_demand_service.data import (
     prepare_features,
 )
 from bike_demand_service.modeling import (
+    chart_holdout_demand_forecast,
+    chart_temporal_validation_quality,
     create_training_plan,
     evaluate_folds,
     score_holdout,
@@ -236,11 +240,17 @@ def test_source_factory_adapts_csv_parquet_and_table_json_to_equivalent_frames(
     )
     assert len({repr(summary) for summary in summaries.values()}) == 1
 
+    computations = {
+        record.id: record
+        for record in records
+        if record.kind == "computation"
+    }
     inspections = [
         record
         for record in records
         if isinstance(record, Execution)
-        and record.name == "Test source representation adapter"
+        and computations[record.computation.id].name
+        == "Test source representation adapter"
     ]
     assert {execution.inputs["source_snapshot"][0] for execution in inspections} == {
         source_artifact.reference for source_artifact in source_artifacts.values()
@@ -410,6 +420,93 @@ def test_quality_checked_computations_declare_required_evidence_evaluators() -> 
     )
 
 
+def test_chart_computations_publish_png_output_contracts() -> None:
+    validation_chart = computation_template(chart_temporal_validation_quality)
+    holdout_chart = computation_template(chart_holdout_demand_forecast)
+
+    for template in (validation_chart, holdout_chart):
+        chart = template.output_artifacts["chart"]
+        assert isinstance(chart, BytesArtifact)
+        assert chart.media_type == "image/png"
+        assert chart.suffix == "png"
+
+
+def test_chart_computations_render_valid_png_payloads() -> None:
+    first = _prediction_rows(fold=1, offset=0)
+    second = _prediction_rows(fold=2, offset=3)
+
+    validation_chart = chart_temporal_validation_quality(
+        (first, second), temporal_validation_rmse_max=100
+    )
+    holdout_chart = chart_holdout_demand_forecast(first.drop(columns=["fold"]))
+
+    assert validation_chart["chart"].startswith(b"\x89PNG\r\n\x1a\n")
+    assert holdout_chart["chart"].startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_chart_computations_materialize_png_artifacts_with_input_lineage(
+    tmp_path: Path,
+) -> None:
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "records" / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "run",
+    ) as publisher:
+        with OclpRun(
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/bike-demand.git",
+                commit="a" * 40,
+            ),
+        ) as observed:
+            first = _publish_predictions(
+                publisher, fold=1, offset=0, relative_path="first.csv"
+            )
+            second = _publish_predictions(
+                publisher, fold=2, offset=3, relative_path="second.csv"
+            )
+            validation_chart = chart_temporal_validation_quality(
+                (first, second), temporal_validation_rmse_max=100
+            )
+            holdout_chart = chart_holdout_demand_forecast(first)
+            validation_execution = observed.execution_for(validation_chart)
+            holdout_execution = observed.execution_for(holdout_chart)
+        records = publisher.records()
+
+    executions = {
+        record.id: record for record in records if isinstance(record, Execution)
+    }
+    assert executions[validation_execution.id].inputs["fold_predictions"] == (
+        first.reference,
+        second.reference,
+    )
+    assert executions[holdout_execution.id].inputs["predictions"] == (
+        first.reference,
+    )
+    for result in (validation_chart, holdout_chart):
+        chart = observed.outputs_for(result)["chart"]
+        assert chart.artifact.media_type == "image/png"
+        assert chart.path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def _publish_predictions(
+    publisher: LocalArtifactPublisher,
+    *,
+    fold: int,
+    offset: int,
+    relative_path: str,
+) -> ArtifactHandle:
+    published = CsvArtifact().persist(
+        publisher=publisher,
+        artifact_id=str(uuid4()),
+        name=f"Fold {fold} predictions",
+        relative_path=relative_path,
+        value=_prediction_rows(fold=fold, offset=offset),
+        created_at=datetime.now(UTC),
+    )
+    return CsvArtifact().handle(published)
+
+
 def test_temporal_validation_quality_uses_the_persisted_threshold() -> None:
     evaluation = {"rmse": 96.13, "temporal_validation_rmse_max": 1}
 
@@ -444,3 +541,14 @@ def _source_rows(count: int) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _prediction_rows(*, fold: int, offset: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2011-01-01", periods=3, freq="h", tz="UTC"),
+            "actual": [40 + offset, 44 + offset, 48 + offset],
+            "prediction": [39 + offset, 45 + offset, 47 + offset],
+            "fold": fold,
+        }
+    )

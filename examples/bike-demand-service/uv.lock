@@ -1998,6 +1998,7 @@ source = { editable = "." }
 dependencies = [
     { name = "catboost" },
     { name = "fastapi" },
+    { name = "matplotlib" },
     { name = "oclp", extra = ["duckdb", "mlflow", "parquet"] },
     { name = "pandas" },
     { name = "scikit-learn" },
@@ -2016,6 +2017,7 @@ dev = [
 requires-dist = [
     { name = "catboost", specifier = ">=1.2,<2" },
     { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "matplotlib", specifier = ">=3.8,<4" },
     { name = "oclp", extras = ["duckdb", "parquet", "mlflow"], editable = "../../" },
     { name = "pandas", specifier = ">=2.2,<3" },
     { name = "scikit-learn", specifier = ">=1.6,<2" },

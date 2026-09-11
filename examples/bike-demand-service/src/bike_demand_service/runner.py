@@ -29,6 +29,8 @@ from bike_demand_service.data import (
 )
 from bike_demand_service.environment import DemoEnvironment
 from bike_demand_service.modeling import (
+    chart_holdout_demand_forecast,
+    chart_temporal_validation_quality,
     create_training_plan,
     evaluate_folds,
     score_holdout,
@@ -143,6 +145,10 @@ def run_bike_training(
         tuple(fold_prediction_artifacts),
         temporal_validation_rmse_max=temporal_validation_rmse_max,
     )
+    chart_temporal_validation_quality(
+        tuple(fold_prediction_artifacts),
+        temporal_validation_rmse_max=temporal_validation_rmse_max,
+    )
     training_config_value = evaluation_result["training_config"]
 
     final_model = train_final_model(
@@ -151,7 +157,8 @@ def run_bike_training(
         training_window="all-pre-holdout-rows",
     )
 
-    score_holdout(final_model, feature_table)
+    holdout_result = score_holdout(final_model, feature_table)
+    chart_holdout_demand_forecast(holdout_result["predictions"])
 
 
 @run(

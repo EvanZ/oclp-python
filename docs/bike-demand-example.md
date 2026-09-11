@@ -23,7 +23,7 @@ All generated data is local and ignored by Git:
 
 ```text
 data/
-  runs/<run-id>/       # payload bytes: CSV, CatBoost models, JSON reports
+  runs/<run-id>/       # payload bytes: CSV, CatBoost models, JSON reports, PNG charts
   oclp-0.3/            # canonical OCLP records and producer catalog
   mlflow/              # local MLflow SQLite metadata and its own artifacts
 ```
@@ -40,6 +40,7 @@ UCI source CSV
   -> final model
   -> model-release ArtifactSet
   -> offline holdout predictions and Evidence
+  -> diagnostic PNG charts for validation quality and holdout forecasting
   -> release-inference smoke-test run
 ```
 
@@ -332,6 +333,32 @@ selects output ports with `@mlflow(payloads=("report",))`. This avoids silently
 copying large datasets. MLflow failures produce an `adapter-failed` OCLP Event
 with a Diagnostic by default; `strict=True` makes mirroring fail the
 application run.
+
+The two small diagnostic charts are ordinary `BytesArtifact` outputs. Each
+declares `media_type="image/png"` and `suffix="png"`, and its owning
+Computation opts its exact `chart` output into the MLflow mirror:
+
+```python
+@mlflow(payloads=("chart",))
+@computation(
+    name="Chart holdout demand forecast",
+    inputs={"predictions": CsvArtifact},
+    outputs={
+        "chart": BytesArtifact(
+            name="Holdout demand forecast chart",
+            media_type="image/png",
+            suffix="png",
+        )
+    },
+)
+def chart_holdout_demand_forecast(predictions: pd.DataFrame) -> dict[str, bytes]:
+    return {"chart": render_png(predictions)}
+```
+
+They consume the actual persisted validation or holdout prediction tables and
+therefore have normal Artifact → Execution → Artifact lineage. They are useful
+operational diagnostics, but are deliberately not members of the model-release
+ArtifactSet: model serving does not depend on them.
 
 The workflow’s `required_evidence_policy="raise"` is separate from the MLflow
 adapter. A failed temporal-quality or holdout Evidence gate still produces its
