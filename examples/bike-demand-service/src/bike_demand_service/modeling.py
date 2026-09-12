@@ -99,6 +99,84 @@ def create_training_plan(
     }
 
 
+@json_artifact(
+    name="Bike demand release cycle",
+    description_from_docstring=True,
+)
+def create_release_cycle(
+    *,
+    release_cycle_id: str,
+    mlflow_parent_run_id: str,
+    fold_count: int,
+    temporal_validation_rmse_max: float,
+) -> dict[str, object]:
+    """Persist the application-owned identity and policy for one release cycle.
+
+    The cycle ID groups independent Dagster job runs without changing the
+    generic OCLP run model.  The final ArtifactSet UUID remains the actual
+    ``release_id``; this Artifact merely records how that release was built.
+    """
+
+    return _release_cycle_document(
+        release_cycle_id=release_cycle_id,
+        mlflow_parent_run_id=mlflow_parent_run_id,
+        fold_count=fold_count,
+        temporal_validation_rmse_max=temporal_validation_rmse_max,
+    )
+
+
+@json_artifact(
+    name="Bike demand release-cycle request",
+    description_from_docstring=True,
+)
+def request_release_cycle(
+    *,
+    release_cycle_id: str,
+    mlflow_parent_run_id: str,
+    fold_count: int,
+    temporal_validation_rmse_max: float,
+) -> dict[str, object]:
+    """Persist a requested release cycle before its partitioned assets begin.
+
+    This unpartitioned request is the UI-friendly cycle-start boundary.  Its
+    sensor creates the dynamic cycle partition and launches the first
+    partitioned preparation run without asking a user to seed Dagster state.
+    """
+
+    return _release_cycle_document(
+        release_cycle_id=release_cycle_id,
+        mlflow_parent_run_id=mlflow_parent_run_id,
+        fold_count=fold_count,
+        temporal_validation_rmse_max=temporal_validation_rmse_max,
+    )
+
+
+def _release_cycle_document(
+    *,
+    release_cycle_id: str,
+    mlflow_parent_run_id: str,
+    fold_count: int,
+    temporal_validation_rmse_max: float,
+) -> dict[str, object]:
+    """Validate and serialize the shared cycle request/bootstrap document."""
+
+    if not release_cycle_id:
+        raise ValueError("release_cycle_id must be non-empty")
+    if not mlflow_parent_run_id:
+        raise ValueError("mlflow_parent_run_id must be non-empty")
+    if fold_count <= 0:
+        raise ValueError("fold_count must be positive")
+    if not isfinite(temporal_validation_rmse_max) or temporal_validation_rmse_max <= 0:
+        raise ValueError("temporal_validation_rmse_max must be finite and positive")
+    return {
+        "version": "1",
+        "release_cycle_id": release_cycle_id,
+        "mlflow_parent_run_id": mlflow_parent_run_id,
+        "fold_count": fold_count,
+        "temporal_validation_rmse_max": temporal_validation_rmse_max,
+    }
+
+
 @mlflow(
     metrics=(
         MlflowMetrics(

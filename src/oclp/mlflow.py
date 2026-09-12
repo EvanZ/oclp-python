@@ -14,7 +14,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from oclp.artifacts import ArtifactHandle
 from oclp.computations import computation_template
@@ -26,6 +26,132 @@ if TYPE_CHECKING:
 
 _MLFLOW_DECLARATION_ATTRIBUTE = "__oclp_mlflow_declaration__"
 _MLFLOW_RUN_DECLARATION_ATTRIBUTE = "__oclp_mlflow_run_declaration__"
+
+
+def create_mlflow_parent_run(
+    *,
+    experiment_name: str,
+    run_name: str,
+    identity_tags: Mapping[str, str],
+    tracking_uri: str | None = None,
+    artifact_location: str | None = None,
+    tags: Mapping[str, str] | None = None,
+) -> str:
+    """Create or find one durable MLflow parent run without making it active.
+
+    A Dagster cycle usually spans independent workers, so an active nested
+    MLflow context cannot cross its job boundaries.  This helper creates a
+    persistent parent run through ``MlflowClient`` and uses ``identity_tags``
+    to make retrying a cycle idempotent.  Child OCLP observations attach with
+    the standard ``mlflow.parentRunId`` tag via :class:`MlflowAdapter`.
+    """
+
+    if not isinstance(experiment_name, str) or not experiment_name:
+        raise ValueError("MLflow experiment_name must be non-empty")
+    if not isinstance(run_name, str) or not run_name:
+        raise ValueError("MLflow parent run_name must be non-empty")
+    normalized_identity = _normalized_mlflow_tags(
+        identity_tags,
+        label="identity",
+        required=True,
+    )
+    normalized_tags = _normalized_mlflow_tags(
+        tags or {},
+        label="tags",
+        required=False,
+    )
+
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    if tracking_uri is not None:
+        mlflow.set_tracking_uri(tracking_uri)
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment_id = _ensure_experiment(
+        client,
+        experiment_name=experiment_name,
+        artifact_location=artifact_location,
+    )
+    filter_key, filter_value = next(iter(sorted(normalized_identity.items())))
+    escaped_value = filter_value.replace("'", "\\\\'")
+    existing = client.search_runs(
+        experiment_ids=[experiment_id],
+        # Child observations deliberately carry their application profile as
+        # searchable tags too.  Restrict the idempotency lookup to the
+        # persistent run created by this helper; otherwise a later Dagster
+        # worker can select a child as its new parent and build a run chain.
+        filter_string=(
+            f"tags.`{filter_key}` = '{escaped_value}' "
+            "AND tags.`oclp.mlflow.role` = 'parent'"
+        ),
+        max_results=1,
+        order_by=["attributes.start_time DESC"],
+    )
+    if existing:
+        return str(existing[0].info.run_id)
+    run_tags = {
+        "mlflow.runName": run_name,
+        "oclp.sdk.adapter": "mlflow",
+        "oclp.mlflow.role": "parent",
+        **normalized_tags,
+        **normalized_identity,
+    }
+    return str(client.create_run(experiment_id, tags=run_tags).info.run_id)
+
+
+def finish_mlflow_parent_run(
+    *,
+    run_id: str,
+    tracking_uri: str | None = None,
+    status: Literal["FINISHED", "FAILED"] = "FINISHED",
+) -> None:
+    """Mark a persistent MLflow parent run terminal after a cycle concludes."""
+
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("MLflow parent run_id must be non-empty")
+    from mlflow.tracking import MlflowClient
+
+    MlflowClient(tracking_uri=tracking_uri).set_terminated(run_id, status=status)
+
+
+def _normalized_mlflow_tags(
+    tags: Mapping[str, str],
+    *,
+    label: str,
+    required: bool,
+) -> dict[str, str]:
+    """Validate the scalar tag maps accepted by MLflow's client API."""
+
+    if not isinstance(tags, Mapping) or (required and not tags):
+        qualifier = "a non-empty " if required else "a "
+        raise ValueError(f"MLflow parent {label}_tags must be {qualifier}mapping")
+    normalized: dict[str, str] = {}
+    for key, value in tags.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"MLflow {label} tag names must be non-empty strings")
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"MLflow {label} tag values must be non-empty strings")
+        normalized[key] = value
+    return normalized
+
+
+def _ensure_experiment(
+    client: Any,
+    *,
+    experiment_name: str,
+    artifact_location: str | None,
+) -> str:
+    """Return an experiment ID, creating the named local experiment if needed."""
+
+    experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        return str(
+            client.create_experiment(
+                experiment_name,
+                artifact_location=artifact_location,
+            )
+        )
+    return str(experiment.experiment_id)
 
 
 @dataclass(frozen=True)
@@ -278,6 +404,51 @@ def _mlflow_declaration(function: Callable[..., object]) -> _MlflowDeclaration |
     return declaration
 
 
+def _profile_tags(observed: OclpRun) -> dict[str, str]:
+    """Project durable application profile facts to searchable MLflow tags."""
+
+    tags: dict[str, str] = {}
+    for profile_name, fields in (observed.profiles or {}).items():
+        if profile_name in {"run", "dagster"}:
+            continue
+        for field_name, value in fields.items():
+            tag_name = ".".join(
+                (
+                    "oclp.profile",
+                    _mlflow_component(profile_name),
+                    _mlflow_component(field_name),
+                )
+            )
+            tags[tag_name] = (
+                str(value)
+                if isinstance(value, (str, int, float, bool))
+                else json.dumps(value, sort_keys=True, separators=(",", ":"))
+            )
+    return tags
+
+
+def _mlflow_run_name(observed: OclpRun) -> str | None:
+    """Give a Dagster-projected observation a distinguishable MLflow label.
+
+    OCLP's workflow name remains the canonical run profile name.  One
+    decorator-oriented Dagster graph, however, opens one OCLP observation for
+    each visible asset.  Including the asset and partition in the MLflow-only
+    label makes those sibling runs readable without changing OCLP identity.
+    """
+
+    dagster_profile = (observed.profiles or {}).get("dagster")
+    if not isinstance(dagster_profile, Mapping):
+        return observed.run_name
+    asset_key = dagster_profile.get("asset_key")
+    if not isinstance(asset_key, str) or not asset_key:
+        return observed.run_name
+    label = " · ".join(part for part in (observed.run_name, asset_key) if part)
+    partition_key = dagster_profile.get("partition_key")
+    if isinstance(partition_key, str) and partition_key:
+        return f"{label} [{partition_key}]"
+    return label
+
+
 @dataclass
 class MlflowAdapter:
     """Mirror an observed OCLP run into one optional MLflow run.
@@ -294,6 +465,9 @@ class MlflowAdapter:
     tracking_uri: str | None = None
     artifact_location: str | None = None
     model_registration: MlflowModelRegistration | None = None
+    parent_run_id: str | None = None
+    parent_profile: str | None = None
+    parent_profile_field: str = "mlflow_parent_run_id"
     strict: bool = False
     _mlflow: Any = field(default=None, init=False, repr=False)
     _client: Any = field(default=None, init=False, repr=False)
@@ -313,6 +487,19 @@ class MlflowAdapter:
     def __post_init__(self) -> None:
         if not self.experiment_name:
             raise ValueError("MLflow experiment_name must be non-empty")
+        if self.parent_run_id is not None and (
+            not isinstance(self.parent_run_id, str) or not self.parent_run_id
+        ):
+            raise ValueError("MLflow parent_run_id must be a non-empty string")
+        if self.parent_profile is not None and (
+            not isinstance(self.parent_profile, str) or not self.parent_profile
+        ):
+            raise ValueError("MLflow parent_profile must be a non-empty string")
+        if (
+            not isinstance(self.parent_profile_field, str)
+            or not self.parent_profile_field
+        ):
+            raise ValueError("MLflow parent_profile_field must be a non-empty string")
 
     def for_run(self) -> MlflowAdapter:
         """Return a fresh mirror session from this reusable run declaration."""
@@ -322,6 +509,9 @@ class MlflowAdapter:
             tracking_uri=self.tracking_uri,
             artifact_location=self.artifact_location,
             model_registration=self.model_registration,
+            parent_run_id=self.parent_run_id,
+            parent_profile=self.parent_profile,
+            parent_profile_field=self.parent_profile_field,
             strict=self.strict,
         )
 
@@ -336,23 +526,49 @@ class MlflowAdapter:
         if tracking_uri is not None:
             mlflow.set_tracking_uri(tracking_uri)
         client = MlflowClient(tracking_uri=tracking_uri)
-        experiment = client.get_experiment_by_name(self.experiment_name)
-        if experiment is None:
-            client.create_experiment(
-                self.experiment_name,
-                artifact_location=artifact_location,
-            )
+        _ensure_experiment(
+            client,
+            experiment_name=self.experiment_name,
+            artifact_location=artifact_location,
+        )
         mlflow.set_experiment(self.experiment_name)
-        active = mlflow.start_run(run_name=observed.run_name)
-        self._mlflow = mlflow
-        self._client = client
-        self._run_id = active.info.run_id
-        tags = {"oclp.sdk.adapter": "mlflow"}
+        parent_run_id = self._resolved_parent_run_id(observed)
+        tags = {
+            "oclp.sdk.adapter": "mlflow",
+            **_profile_tags(observed),
+        }
         if observed.run_id is not None:
             tags["oclp.run.id"] = str(observed.run_id)
         if observed.run_name is not None:
             tags["oclp.run.name"] = observed.run_name
-        mlflow.set_tags(tags)
+        if parent_run_id is not None:
+            tags["mlflow.parentRunId"] = parent_run_id
+        active = mlflow.start_run(
+            run_name=_mlflow_run_name(observed),
+            tags=tags,
+        )
+        self._mlflow = mlflow
+        self._client = client
+        self._run_id = active.info.run_id
+
+    def _resolved_parent_run_id(self, observed: OclpRun) -> str | None:
+        """Read explicit or profile-provided parent context for this child run."""
+
+        if self.parent_run_id is not None:
+            return self.parent_run_id
+        if self.parent_profile is None:
+            return None
+        profile = (observed.profiles or {}).get(self.parent_profile)
+        if profile is None:
+            return None
+        parent = profile.get(self.parent_profile_field)
+        if not isinstance(parent, str) or not parent:
+            raise ValueError(
+                "MLflow parent profile field must be a non-empty string: "
+                f"{self.parent_profile}.{self.parent_profile_field}"
+            )
+        return parent
+
 
     def _resolve_destination(self, observed: OclpRun) -> tuple[str | None, str | None]:
         """Resolve explicit settings or a local store beside OCLP records."""

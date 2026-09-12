@@ -102,7 +102,10 @@ and an operational export rather than synchronously persisting every request.
 The batch milestone also uses MLflow as a parallel experiment-tracking view.
 It is not the source of truth for OCLP records or Artifact identity.
 
-- One MLflow run mirrors one OCLP model-training run.
+- The non-Dagster demo uses one MLflow run for one OCLP model-training run.
+- A Dagster `release_cycle` creates one persistent MLflow parent run. Every
+  bootstrap, preparation, fold, aggregation, release, and release-profiled
+  inference OCLP observation becomes an independently completed child run.
 - The SDK adapter logs canonical OCLP record JSON, UUID cross-links, typed
   Execution parameters, and numeric Evidence details.
 - Model payloads are mirrored by default; other payloads are opt-in, avoiding
@@ -114,10 +117,13 @@ The initial demo will use local MLflow metadata and artifacts under
 `data/mlflow/`. This makes the MLflow UI easy to start without a service, while
 leaving the OCLP DuckDB store independently inspectable in Cyclops.
 
-MLflow is useful here for experiment comparison. The FastAPI service does not
-write to MLflow: it uses the local OCLP store directly so the release, request,
-response, Execution, and Events can be inspected together. Operational export
-such as OpenTelemetry remains a later concern.
+MLflow is useful here for experiment comparison. A FastAPI process serving a
+Dagster-created release reads the `bike_demand` profile from its release
+ArtifactSet and creates a request child run under that release cycle's parent.
+Older demo releases that predate the profile remain serveable but have no
+parent-run association. OCLP remains authoritative for the release, request,
+response, Execution, and Events. Operational export such as OpenTelemetry
+remains a later concern.
 
 ## Layout
 
@@ -127,6 +133,7 @@ examples/bike-demand-service/
   src/bike_demand_service/
     data.py                   # UCI access and time-ordered feature preparation
     modeling.py               # training plan, CatBoost training, evaluation, scoring
+    release_cycle.py          # example-owned cycle profile and MLflow experiment name
     environment.py            # local OCLP, payload, and MLflow storage locations
     runner.py                 # declared run, bootstrap, and SDK MLflow adapter configuration
     cli.py                    # executable model-training command
@@ -190,23 +197,60 @@ source of truth.
 
 ## Dagster UI dogfood
 
-The optional Dagster definition runs the existing OCLP- and MLflow-instrumented
-training workflow as one local Dagster asset. It does not duplicate the
-workflow's OCLP declarations or turn the Dagster asset into a synthetic OCLP
-Computation. After a materialization, Dagster displays the OCLP run ID, record
-directory, and selected Dagster context in the asset metadata panel.
+The Dagster definitions project the complete data and model pipeline as a
+transparent asset graph. They expose the source and training-plan Artifacts;
+feature preparation outputs; a single temporal-fold multi-asset; candidate
+evaluation; both charts; final-model and holdout outputs; and the assembled
+release ArtifactSet. There is never a hard-coded `fold_1`, `fold_2`, or
+`fold_3` asset definition.
+
+Each cycle is a dynamic `bike_demand_training_cycle` partition, but users do
+not seed that partition manually. Launch the unpartitioned
+**bike_demand_start_release_cycle** job and set its `fold_count` and
+`temporal_validation_rmse_max` config. It creates a UUID and an immutable
+`Bike demand release-cycle request` Artifact. Its automatically enabled sensor
+adds the cycle partition and starts **bike_demand_prepare_cycle** with the same
+configuration. Preparation then materializes `Bike demand release cycle`, the
+partitioned Artifact that is a member of the final release ArtifactSet.
+
+The persisted fold-definition Artifact drives
+`launch_bike_demand_fold_partitions`, which adds only the planned `fold-N`
+partitions and starts one **bike_demand_train_fold_job** run per fold. Once
+every planned prediction exists,
+`launch_bike_demand_cycle_fan_in` starts **bike_demand_aggregate_cycle** to
+evaluate, train the final model, score holdout data, render both charts, and
+assemble the release. `finish_bike_demand_release_cycle_parent` then marks
+the parent MLflow run finished.
+
+The graph is intentionally multi-run. Its catalog-backed OCLP Artifact I/O
+manager persists only Artifact UUID pointers between workers and rehydrates
+the exact handles from the OCLP catalog. The generic SDK profile records the
+Dagster partition key. The example-owned `bike_demand` profile carries
+`release_cycle_id` and `mlflow_parent_run_id` on the corresponding
+Executions, Artifacts, final ArtifactSet, and manifest; “cycle” is solely this
+example's partition dimension. The final ArtifactSet UUID is the actual
+`release_id`, not the `release_cycle_id`.
+
+Dagster displays the OCLP run ID, record directory, execution or Artifact ID,
+and selected scheduler context in every materialized asset's metadata panel.
 
 ```bash
 uv sync --group dev --extra dagster
 uv run dagster dev -m bike_demand_service.dagster_defs --port 3000
 ```
 
-Open <http://127.0.0.1:3000>, select **bike_demand_training**, and materialize
-the **bike_demand_model_release** asset. The job uses Dagster's in-process
-executor because the dogfood store has a local single-writer DuckDB catalog.
-It writes to the same ignored `data/` area used by the ordinary demo: OCLP
-records under `data/oclp-0.3`, immutable payloads under `data/runs`, and the
-MLflow mirror under `data/mlflow`.
+Open <http://127.0.0.1:3000> and launch **bike_demand_start_release_cycle**.
+The four sensors are enabled by default: they start preparation, fan out the
+plan, fan in the completed folds, and finish the release-cycle MLflow parent.
+This downloads
+the UCI source, trains the number of folds selected in the plan, produces the
+final CatBoost model and holdout results, and creates the MLflow projections.
+The local DuckDB catalog uses an inter-process file lock, so separately
+scheduled fold runs can train concurrently while their short catalog writes
+remain safe. It writes to the same ignored `data/` area used by the ordinary
+demo: OCLP records under `data/oclp-0.3`, immutable payloads under `data/runs`,
+Artifact-handoff pointers under `data/dagster-artifact-handles`, and the MLflow
+mirror under `data/mlflow`.
 
 ## Implementation sequence
 

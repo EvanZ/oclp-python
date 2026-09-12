@@ -237,8 +237,10 @@ def observe_run(
     source: ImplementationSource,
     parent_execution: RecordReference | None = None,
     profiles: ProfileBindings | None = None,
+    record_profiles: ProfileBindings | None = None,
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS,
     adapters: tuple[RunAdapter, ...] | None = None,
+    finalize_decorated_artifact_sets: bool = True,
 ) -> Generator[OclpRun, None, None]:
     """Activate the SDK runtime for one ``@run``-declared workflow.
 
@@ -246,7 +248,13 @@ def observe_run(
     SDK owns the resulting runtime, UUID-based run profile binding, artifact
     materialization, Execution/Event publication, and failure capture. Extra
     profiles may be supplied, but may not replace the run profile
-    derived from the workflow declaration.
+    derived from the workflow declaration. ``finalize_decorated_artifact_sets``
+    is normally enabled. A scheduler projection may disable it when a named
+    downstream boundary assembles a run-wide ArtifactSet from independently
+    materialized steps. ``record_profiles`` are application-owned bindings
+    attached to durable Artifacts, ArtifactSets, and release manifests made in
+    this context. They deliberately do not copy scheduler/run facts onto
+    immutable data records.
     """
 
     template = run_template(workflow)
@@ -269,10 +277,12 @@ def observe_run(
         source=source,
         parent_execution=parent_execution,
         profiles=merged_profiles,
+        record_profiles=record_profiles,
         artifact_adapters=artifact_adapters,
         adapters=active_adapters,
         run_name=template.name,
         required_evidence_policy=template.required_evidence_policy,
+        finalize_decorated_artifact_sets=finalize_decorated_artifact_sets,
     )
     observed.run_id = concrete_run_id
     with observed:
@@ -373,10 +383,12 @@ class OclpRun:
     source: ImplementationSource
     parent_execution: RecordReference | None = None
     profiles: ProfileBindings | None = None
+    record_profiles: ProfileBindings | None = None
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS
     adapters: tuple[RunAdapter, ...] = ()
     run_name: str | None = None
     required_evidence_policy: RequiredEvidencePolicy = "continue"
+    finalize_decorated_artifact_sets: bool = True
     run_id: UUID | None = field(default=None, init=False)
     _token: Token[OclpRun | None] | None = field(default=None, init=False, repr=False)
     _value_bindings: dict[int, _ValueBinding] = field(
@@ -433,7 +445,7 @@ class OclpRun:
         assert self._token is not None
         completion_error = error
         try:
-            if error is None:
+            if error is None and self.finalize_decorated_artifact_sets:
                 try:
                     self.publish_decorated_artifact_sets()
                 except BaseException as publication_error:
@@ -782,21 +794,25 @@ class OclpRun:
             name=name,
             created_at=created_at,
             members=tuple(resolved_members),
+            profiles=self.record_profiles,
         )
         reference = self.publisher.publish(artifact_set)
         manifest: ArtifactHandle | None = None
         if materialize_manifest:
             assert manifest_name is not None  # validated above for type narrowing.
-            # A run profile is defined only for Executions. The release
-            # sidecar therefore carries its own one-way profile binding to the
-            # exact ArtifactSet it describes; the set never refers back, so
-            # neither record becomes self-referential.
-            manifest_profiles: ProfileBindings = {
+            # A run profile is defined only for Executions. Application-owned
+            # record profiles remain durable release facts; the SDK-owned
+            # release-manifest profile points one way to the exact set it
+            # describes, so neither record becomes self-referential.
+            manifest_profiles = _merge_profile_bindings(
+                self.record_profiles,
+                {
                 RELEASE_MANIFEST_PROFILE: ReleaseManifestBinding(
                     version=RELEASE_MANIFEST_PROFILE_VERSION,
                     artifact_set=reference,
                 ).model_dump(mode="json")
-            }
+                },
+            )
             manifest = ArtifactHandle(
                 published=self.publisher.json_artifact(
                     artifact_id=new_record_id(),
@@ -1233,7 +1249,10 @@ class OclpRun:
             args=args,
             kwargs=kwargs,
         )
-        return resolved_spec.persist(
+        return _with_record_profiles(
+            resolved_spec,
+            record_profiles=self.record_profiles,
+        ).persist(
             publisher=self.publisher,
             artifact_id=artifact_id,
             name=resolved_spec.name,
@@ -1251,7 +1270,10 @@ class OclpRun:
         artifact_type: ArtifactType,
         value: object,
     ) -> PublishedArtifact:
-        return artifact_type.persist(
+        return _with_record_profiles(
+            artifact_type,
+            record_profiles=self.record_profiles,
+        ).persist(
             publisher=self.publisher,
             artifact_id=artifact_id,
             name=name,
@@ -1879,6 +1901,45 @@ def _resolve_output_annotations(
     declaration = spec.model_dump()
     declaration["annotations"] = annotations
     return type(spec).model_validate(declaration)
+
+
+def _with_record_profiles(
+    spec: ArtifactType,
+    *,
+    record_profiles: ProfileBindings | None,
+) -> ArtifactType:
+    """Return an Artifact declaration carrying run-scoped durable profiles.
+
+    Artifact declarations may already carry a static profile.  Application
+    code can additionally supply a context profile (for example a release
+    cycle) without allowing either declaration to silently overwrite the
+    other.
+    """
+
+    profiles = _merge_profile_bindings(spec.profiles, record_profiles)
+    if profiles == spec.profiles:
+        return spec
+    return spec.model_copy(update={"profiles": profiles})
+
+
+def _merge_profile_bindings(
+    *bindings: ProfileBindings | None,
+) -> ProfileBindings | None:
+    """Merge profile maps while treating conflicting durable facts as errors."""
+
+    merged: ProfileBindings = {}
+    for binding in bindings:
+        if binding is None:
+            continue
+        for name, value in binding.items():
+            existing = merged.get(name)
+            if existing is not None and existing != value:
+                raise ValueError(
+                    "profile binding conflict for durable record profile "
+                    f"{name!r}"
+                )
+            merged[name] = value
+    return merged or None
 
 
 def _callable_key(function: Callable[..., object]) -> str:

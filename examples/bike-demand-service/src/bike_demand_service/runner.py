@@ -37,6 +37,10 @@ from bike_demand_service.modeling import (
     train_final_model,
     train_fold,
 )
+from bike_demand_service.release_cycle import (
+    MLFLOW_EXPERIMENT_NAME,
+    RELEASE_CYCLE_PROFILE,
+)
 from bike_demand_service.service import (
     persist_prediction_request,
     predict_bike_demand,
@@ -56,7 +60,6 @@ _RELEASE_SMOKE_REQUEST: dict[str, int | float] = {
     "hum": 0.55,
     "windspeed": 0.18,
 }
-_MLFLOW_EXPERIMENT_NAME = "oclp-bike-demand-service"
 
 
 @dataclass(frozen=True)
@@ -94,7 +97,10 @@ class _ReleaseSmokeTestResult:
 @run(
     name="Bike demand model training",
     adapters=(
-        MlflowAdapter(experiment_name=_MLFLOW_EXPERIMENT_NAME),
+        MlflowAdapter(
+            experiment_name=MLFLOW_EXPERIMENT_NAME,
+            parent_profile=RELEASE_CYCLE_PROFILE,
+        ),
     ),
     required_evidence_policy="raise",
 )

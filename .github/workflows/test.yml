@@ -108,5 +108,5 @@ jobs:
       - name: Install Dagster integration dependencies
         run: uv sync --locked --group dev --extra dagster
 
-      - name: Test Dagster adapter
-        run: uv run pytest tests/test_dagster_adapter.py
+      - name: Test Dagster integration
+        run: uv run pytest tests/test_dagster_adapter.py tests/test_dagster_projection.py

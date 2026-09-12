@@ -76,7 +76,14 @@ from oclp.evidence import (
     evidence_implementation,
     evidence_template,
 )
-from oclp.mlflow import MlflowAdapter, MlflowMetrics, MlflowModelRegistration, mlflow
+from oclp.mlflow import (
+    MlflowAdapter,
+    MlflowMetrics,
+    MlflowModelRegistration,
+    create_mlflow_parent_run,
+    finish_mlflow_parent_run,
+    mlflow,
+)
 from oclp.models import (
     Artifact,
     ArtifactSet,
@@ -154,6 +161,8 @@ __all__ = [
     "MlflowAdapter",
     "MlflowMetrics",
     "MlflowModelRegistration",
+    "create_mlflow_parent_run",
+    "finish_mlflow_parent_run",
     "NpyArrayAdapter",
     "NpyArtifact",
     "NpzArrayArchiveAdapter",

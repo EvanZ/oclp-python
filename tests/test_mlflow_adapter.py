@@ -18,6 +18,8 @@ from oclp import (
     MlflowModelRegistration,
     artifact_set,
     computation,
+    create_mlflow_parent_run,
+    finish_mlflow_parent_run,
     mlflow,
     observe_run,
     run,
@@ -114,6 +116,10 @@ class _FakeMlflowClient:
         self.created_experiments: list[tuple[str, str | None]] = []
         self.registered_models: list[str] = []
         self.model_versions: list[dict[str, object]] = []
+        self.created_runs: list[tuple[str, dict[str, str]]] = []
+        self.terminated_runs: list[tuple[str, str]] = []
+        self.search_results: list[SimpleNamespace] = []
+        self.search_calls: list[dict[str, object]] = []
 
     def get_experiment_by_name(self, _name: str) -> None:
         return None
@@ -130,6 +136,22 @@ class _FakeMlflowClient:
 
     def create_model_version(self, **kwargs: object) -> None:
         self.model_versions.append(kwargs)
+
+    def search_runs(self, **kwargs: object) -> list[SimpleNamespace]:
+        self.search_calls.append(kwargs)
+        return self.search_results
+
+    def create_run(
+        self,
+        experiment_id: str,
+        *,
+        tags: dict[str, str],
+    ) -> SimpleNamespace:
+        self.created_runs.append((experiment_id, tags))
+        return SimpleNamespace(info=SimpleNamespace(run_id="persistent-parent-run"))
+
+    def set_terminated(self, run_id: str, *, status: str) -> None:
+        self.terminated_runs.append((run_id, status))
 
 
 class _FakeMlflow:
@@ -150,8 +172,15 @@ class _FakeMlflow:
     def set_experiment(self, name: str) -> None:
         self.experiment_name = name
 
-    def start_run(self, *, run_name: str | None) -> SimpleNamespace:
+    def start_run(
+        self,
+        *,
+        run_name: str | None,
+        tags: dict[str, str] | None = None,
+    ) -> SimpleNamespace:
         self.run_names.append(run_name)
+        if tags is not None:
+            self.tags.update(tags)
         return SimpleNamespace(info=SimpleNamespace(run_id="mlflow-run-id"))
 
     def set_tags(self, values: dict[str, str]) -> None:
@@ -256,6 +285,124 @@ def test_mlflow_adapter_mirrors_records_models_and_explicit_registration(
     assert client.model_versions[0]["run_id"] == "mlflow-run-id"
     assert mlflow.run_names == ["MLflow adapter workflow"]
     assert mlflow.end_statuses == ["FINISHED"]
+
+
+def test_mlflow_adapter_uses_an_application_profile_for_cross_worker_parentage(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow, _client = fake_mlflow
+    adapter = MlflowAdapter(
+        experiment_name="oclp-tests",
+        parent_profile="bike_demand",
+    )
+
+    @run(name="Profiled child", adapters=(adapter,))
+    def workflow() -> None:
+        pass
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+            profiles={
+                "bike_demand": {
+                    "release_cycle_id": "cycle-123",
+                    "mlflow_parent_run_id": "parent-run-456",
+                }
+            },
+        ):
+            workflow()
+
+    assert mlflow.tags["mlflow.parentRunId"] == "parent-run-456"
+    assert mlflow.tags["oclp.profile.bike_demand.release_cycle_id"] == "cycle-123"
+
+
+def test_mlflow_adapter_labels_dagster_projected_runs_by_asset_and_partition(
+    tmp_path: Path, fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    mlflow, _client = fake_mlflow
+    adapter = MlflowAdapter(experiment_name="oclp-tests")
+
+    @run(name="Profiled child", adapters=(adapter,))
+    def workflow() -> None:
+        pass
+
+    with LocalArtifactPublisher(
+        catalog_path=tmp_path / "catalog.duckdb",
+        record_root=tmp_path / "records",
+        payload_root=tmp_path / "payloads",
+    ) as publisher:
+        with observe_run(
+            workflow,
+            publisher=publisher,
+            source=GitSource(
+                repository="https://github.com/example/adapter-test.git",
+                commit="a" * 40,
+            ),
+            profiles={
+                "dagster": {
+                    "asset_key": "bike_demand_fold_model",
+                    "partition_key": "cycle-123|fold-2",
+                }
+            },
+        ):
+            workflow()
+
+    assert mlflow.run_names == [
+        "Profiled child · bike_demand_fold_model [cycle-123|fold-2]"
+    ]
+
+
+def test_persistent_mlflow_parent_run_is_created_outside_an_active_context(
+    fake_mlflow: tuple[_FakeMlflow, _FakeMlflowClient]
+) -> None:
+    _mlflow, client = fake_mlflow
+
+    run_id = create_mlflow_parent_run(
+        experiment_name="oclp-tests",
+        run_name="release cycle cycle-123",
+        tracking_uri="sqlite:///test.db",
+        identity_tags={"oclp.profile.example.release_cycle_id": "cycle-123"},
+        tags={"example.role": "release-cycle-parent"},
+    )
+    finish_mlflow_parent_run(
+        run_id=run_id,
+        tracking_uri="sqlite:///test.db",
+    )
+
+    assert run_id == "persistent-parent-run"
+    assert client.created_runs == [
+        (
+            "experiment-id",
+            {
+                "mlflow.runName": "release cycle cycle-123",
+                "oclp.sdk.adapter": "mlflow",
+                "oclp.mlflow.role": "parent",
+                "example.role": "release-cycle-parent",
+                "oclp.profile.example.release_cycle_id": "cycle-123",
+            },
+        )
+    ]
+    assert client.terminated_runs == [("persistent-parent-run", "FINISHED")]
+    assert client.search_calls == [
+        {
+            "experiment_ids": ["experiment-id"],
+            "filter_string": (
+                "tags.`oclp.profile.example.release_cycle_id` = 'cycle-123' "
+                "AND tags.`oclp.mlflow.role` = 'parent'"
+            ),
+            "max_results": 1,
+            "order_by": ["attributes.start_time DESC"],
+        }
+    ]
 
 
 def test_mlflow_adapter_scopes_same_named_payloads_by_artifact_id(

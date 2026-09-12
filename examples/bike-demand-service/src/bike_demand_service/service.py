@@ -31,6 +31,7 @@ from oclp import (
     CatBoostModelArtifact,
     GitSource,
     JsonArtifact,
+    MlflowAdapter,
     OclpRun,
     artifact_set_input,
     capture_git_source_overlay,
@@ -46,6 +47,11 @@ from pydantic import BaseModel, ConfigDict
 
 from bike_demand_service.data import FEATURE_COLUMNS, model_features
 from bike_demand_service.environment import DemoEnvironment
+from bike_demand_service.release_cycle import (
+    MLFLOW_EXPERIMENT_NAME,
+    RELEASE_CYCLE_PROFILE,
+    release_cycle_profile_from_profiles,
+)
 
 
 class PredictionRequest(BaseModel):
@@ -185,21 +191,40 @@ def create_app(
     environment = environment or DemoEnvironment.default()
     environment.prepare()
     release = load_release_manifest(release_manifest_path)
+    try:
+        cycle_profile = release_cycle_profile_from_profiles(
+            release.artifact_set.profiles
+        )
+    except ValueError:
+        # Existing non-Dagster demo releases predate the application profile.
+        # They remain serveable, but cannot be associated with a parent run.
+        cycle_profile = None
+    cycle_profiles = (
+        {RELEASE_CYCLE_PROFILE: cycle_profile.model_dump(mode="json")}
+        if cycle_profile is not None
+        else None
+    )
     app = FastAPI(
         title="OCLP bike-demand inference demo",
         version="0.1.0",
     )
     app.state.model_release = release
+    app.state.release_cycle_id = (
+        cycle_profile.release_cycle_id if cycle_profile is not None else None
+    )
 
     @app.get("/health")
     def health() -> dict[str, str]:
         """Report the precise release configured for this process."""
 
-        return {
+        response = {
             "status": "ok",
             "model_release_id": release.artifact_set.id,
             "release_manifest": str(release_manifest_path),
         }
+        if cycle_profile is not None:
+            response["release_cycle_id"] = cycle_profile.release_cycle_id
+        return response
 
     @app.post("/predict", response_model=PredictionResponse)
     def predict(request: PredictionRequest) -> PredictionResponse:
@@ -226,6 +251,18 @@ def create_app(
             with OclpRun(
                 publisher=publisher,
                 source=source,
+                profiles=cycle_profiles,
+                record_profiles=cycle_profiles,
+                adapters=(
+                    (
+                        MlflowAdapter(
+                            experiment_name=MLFLOW_EXPERIMENT_NAME,
+                            parent_profile=RELEASE_CYCLE_PROFILE,
+                        ),
+                    )
+                    if cycle_profiles is not None
+                    else ()
+                ),
             ) as observed:
                 request_artifact = persist_prediction_request(
                     payload=request.model_dump(mode="json"),

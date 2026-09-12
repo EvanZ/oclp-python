@@ -1,6 +1,6 @@
 # Artifact formats and library integrations
 
-## Dagster asset observation
+## Dagster workflow projection
 
 Install the optional Dagster integration with:
 
@@ -8,24 +8,24 @@ Install the optional Dagster integration with:
 pip install "oclp[dagster]"
 ```
 
-`@dagster_asset(...)` is applied directly inside Dagster's `@asset`. It opens
-the OCLP observation context for an existing `@run` workflow, while that
-workflow's existing `@computation` and Artifact declarations continue to
-produce the only OCLP records. On completion, the adapter adds the OCLP run
-identity, record-store path, outcome, and an explicit selection of Dagster
-context fields to the Dagster asset materialization metadata.
+`@dg_workflow(...)` projects an existing `@run` workflow as one Dagster asset.
+The body still supplies application-specific workflow arguments; its existing
+`@computation` and Artifact declarations continue to produce the only OCLP
+records. On completion, the projection adds the OCLP run identity, record-store
+path, outcome, and an explicit selection of Dagster context fields to the
+Dagster asset materialization metadata.
 
 ```python
 import dagster as dg
 
-from oclp.dagster import dagster_asset
+from oclp.dagster import dg_workflow
 
 
-@dg.asset
-@dagster_asset(
+@dg_workflow(
     workflow=train,
     publisher=publisher_for_dagster_context,
     source=source_for_dagster_context,
+    asset_key="trained_model",
 )
 def trained_model(context: dg.AssetExecutionContext) -> None:
     train(...)
@@ -35,7 +35,179 @@ This is an integration boundary, not an orchestration DSL. It never derives an
 OCLP Computation from an asset, creates a parent Execution for a Dagster run,
 or reflects arbitrary Dagster context. The initial allow-list is `run_id`,
 `asset_key`, `partition_key`, and `retry_number`; select only values that are
-useful to navigate the Dagster materialization.
+useful to navigate the Dagster materialization. `dagster_asset` remains a
+lower-level compatibility adapter for applications that need to compose a
+custom Dagster decorator stack.
+
+## Dagster graph projections
+
+`@dg_artifact(...)`, `@dg_computation(...)`, and `@dg_artifact_set(...)` build
+a granular Dagster graph from application-selected OCLP boundaries. They are
+applied outside existing OCLP decorators: the inner declaration remains
+canonical and the function body does not change.
+
+```python
+import dagster as dg
+
+from oclp import JsonArtifact, computation, json_artifact, run
+from oclp.dagster import dg_artifact, dg_computation
+
+
+@run(name="Customer orders")
+def customer_orders() -> None:
+    pass
+
+
+@dg_artifact(
+    workflow=customer_orders,
+    publisher=publisher_for_context,
+    source=source_for_context,
+    asset_key="raw_orders",
+)
+@json_artifact(name="Raw orders")
+def load_orders() -> dict[str, int]:
+    return {"rows": 42}
+
+
+@dg_computation(
+    workflow=customer_orders,
+    publisher=publisher_for_context,
+    source=source_for_context,
+    asset_key="validated_orders",
+    inputs={"orders": dg.AssetIn(key=dg.AssetKey("raw_orders"))},
+)
+@computation(
+    name="Validate orders",
+    inputs={"orders": JsonArtifact},
+    outputs={"validated": JsonArtifact(name="Validated orders")},
+)
+def validate_orders(orders: dict[str, int]) -> dict[str, int]:
+    return orders
+```
+
+`dg_artifact` records the acquired Artifact and exposes it as a Dagster data
+asset; it does not create an OCLP Execution. `dg_computation` requires every
+declared Artifact input to have an explicit Dagster `AssetIn`, and returns the
+exact `ArtifactHandle`, so the downstream OCLP Execution records the upstream
+Artifact reference in its ordinary `inputs` field.
+
+For one output, use `asset_key`. For multiple outputs, map every declared OCLP
+output port to `dg.AssetOut` through `outputs`; this creates one atomic,
+non-subsettable Dagster `multi_asset`, matching the one OCLP Execution that
+produces all outputs. A `many(...)` OCLP input maps either to an explicitly
+ordered tuple of `AssetIn` values or to one partition-mapped `AssetIn` whose
+I/O manager returns the selected handles as an ordered tuple.
+`dg_artifact_set` is a visible downstream collection node for a release that
+spans independently materialized steps, rather than letting worker-local
+contexts publish partial collections. An `@artifact_set` already present on a
+projected Computation is deferred for the same reason; use one explicit
+`dg_artifact_set` for the cross-step collection.
+
+When the original decorated callable lives in another module, a decorated
+proxy can keep the Dagster definition declarative without duplicating the
+OCLP declaration. Set `target` to the existing callable and have the proxy
+call it with the exact Artifact handles it receives:
+
+```python
+@dg_computation(
+    workflow=train,
+    publisher=publisher_for_context,
+    source=source_for_context,
+    target=prepare_features,
+    outputs={
+        "features": dg.AssetOut(key="features"),
+        "contract": dg.AssetOut(key="feature_contract"),
+    },
+    inputs={
+        "source": dg.AssetIn(key=dg.AssetKey("raw_orders")),
+        "plan": dg.AssetIn(key=dg.AssetKey("training_plan")),
+    },
+)
+def customer_feature_assets(source, plan):
+    return prepare_features(source, plan)
+```
+
+Every projected step independently opens an OCLP observation with a UUID
+derived from the Dagster run ID. Executions from all steps and workers in that
+Dagster run therefore share `profiles.run`; their `profiles.dagster` binding
+retains generic Dagster run, asset, step, partition, and retry facts. A retry
+creates a new immutable OCLP Execution with the same run identity and a new
+retry number. A selected Dagster subset emits records only for steps Dagster
+executes.
+
+### Application-owned grouping profiles
+
+`application_profiles` lets the granular projection decorators attach durable,
+application-owned facts without teaching the SDK a domain-specific field. It
+accepts either a profile mapping or a `context -> profile mapping` factory.
+The mapping is attached to the projected Execution alongside the SDK-owned
+`run` and `dagster` profiles, and to Artifacts, explicit ArtifactSets, and
+release manifests published by that step.
+
+```python
+@dg_computation(
+    workflow=train,
+    publisher=publisher_for_context,
+    source=source_for_context,
+    asset_key="candidate_model",
+    inputs={"features": dg.AssetIn(key=dg.AssetKey("features"))},
+    application_profiles=lambda context: {
+        "my_application": {
+            "version": "1",
+            "release_cycle_id": context.partition_key,
+        }
+    },
+)
+@computation(...)
+def train_candidate(features):
+    ...
+```
+
+The SDK reserves `run` and `dagster`; application profiles cannot overwrite
+them. Use a project-owned profile for business concepts such as a release
+cycle, tenant, or customer batch. `deps=` is also available on the granular
+decorators when an ordering-only Dagster dependency is needed without adding a
+synthetic OCLP Artifact input.
+
+### Partitioned, multi-run graphs
+
+Pass a Dagster `partitions_def` to the projection decorator exactly as you
+would to `@dagster.asset`. A proxy can request the Dagster execution context
+with `context_parameter="context"` when application code needs to translate a
+partition key into an explicit parameter. This keeps the OCLP declaration
+canonical while making the orchestration mapping visible in the proxy.
+
+Dynamic partitions execute in separate Dagster runs, so an in-memory
+`ArtifactHandle` cannot cross their boundary. Use the SDK's catalog-backed I/O
+resource for Artifact-producing assets and outputs:
+
+```python
+from pathlib import Path
+
+from oclp.dagster import oclp_artifact_io_manager
+
+resources = {
+    "oclp_artifact_io": oclp_artifact_io_manager(
+        catalog_path=Path("data/oclp/catalog.duckdb"),
+        storage_root=Path("data/dagster-artifact-handles"),
+    ),
+}
+```
+
+Set `io_manager_key="oclp_artifact_io"` on a single-output `dg_artifact` or
+`dg_computation`; for a `multi_asset`, set that key on each `dg.AssetOut`.
+The resource persists only an OCLP Artifact UUID per asset partition. A later
+worker rehydrates the handle from the OCLP catalog and verifies payload reads
+normally. The pointer directory is reconstructible scheduler state; immutable
+OCLP records and payload locations remain authoritative.
+
+The built-in `DuckdbCatalog` serializes each local catalog operation with an
+inter-process lock, including connection setup. Independent Dagster workers on
+the same shared filesystem can therefore publish while their long-running
+Computations execute concurrently. This is a local coordination mechanism, not
+a distributed catalog: workers on different hosts need shared locking and a
+catalog service appropriate to that deployment. In every case, use a payload
+root that incorporates the Dagster run, step, partition, and retry identity.
 
 An OCLP `Artifact` is format-neutral. The Python SDK's concrete
 `ArtifactType` declarations provide the local persistence and loading policy

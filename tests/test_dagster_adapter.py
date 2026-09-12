@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from oclp import JsonArtifact, OpaqueSource, computation, run
-from oclp.dagster import dagster_asset
+from oclp.dagster import dagster_asset, dg_workflow
 from oclp.publishing import LocalArtifactPublisher
 
 dg = pytest.importorskip("dagster")
@@ -58,6 +58,41 @@ def test_dagster_asset_observes_existing_oclp_workflow(tmp_path):
     assert metadata["oclp.dagster.run_id"].value
     assert metadata["oclp.dagster.asset_key"].value == "dagster_report"
     assert metadata["oclp.dagster.retry_number"].value == 0
+
+    with publisher_for(None) as publisher:
+        observed_records = publisher.records()
+    assert [record.kind for record in observed_records].count("computation") == 1
+    assert [record.kind for record in observed_records].count("execution") == 1
+
+
+def test_dg_workflow_creates_the_dagster_asset_without_a_second_decorator(tmp_path):
+    records = tmp_path / "records"
+
+    def publisher_for(_context):
+        return LocalArtifactPublisher(
+            catalog_path=records / "catalog.duckdb",
+            record_root=records,
+            payload_root=tmp_path / "payloads",
+        )
+
+    @dg_workflow(
+        workflow=build_report_workflow,
+        publisher=publisher_for,
+        source=OpaqueSource(reason="Dagster workflow projection test source"),
+        asset_key="workflow_report",
+        group_name="reports",
+    )
+    def workflow_report(context: dg.AssetExecutionContext) -> dict[str, int]:
+        return build_report_workflow()
+
+    result = dg.materialize([workflow_report], raise_on_error=True)
+
+    materialization = result.get_asset_materialization_events()[0]
+    metadata = materialization.event_specific_data.materialization.metadata
+    assert metadata["oclp.dagster.asset_key"].value == "workflow_report"
+    assert (
+        workflow_report.group_names_by_key[dg.AssetKey("workflow_report")] == "reports"
+    )
 
     with publisher_for(None) as publisher:
         observed_records = publisher.records()
