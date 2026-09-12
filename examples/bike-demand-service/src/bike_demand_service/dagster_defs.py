@@ -265,6 +265,29 @@ def _asset_out(key: str) -> dg.AssetOut:
     return dg.AssetOut(key=key, io_manager_key=_IO_MANAGER_KEY)
 
 
+def _temporal_fold_number(context: dg.AssetExecutionContext) -> int:
+    """Resolve the persisted temporal-fold number from one Dagster partition."""
+
+    partition_key = context.partition_key
+    if not isinstance(partition_key, dg.MultiPartitionKey):
+        raise ValueError("bike_demand_train_fold requires a multi-partition key")
+    fold_key = partition_key.keys_by_dimension["fold"]
+    if not fold_key.startswith("fold-"):
+        raise ValueError(f"unexpected temporal-fold partition key {fold_key!r}")
+    try:
+        return int(fold_key.removeprefix("fold-"))
+    except ValueError as error:
+        raise ValueError(
+            f"unexpected temporal-fold partition key {fold_key!r}"
+        ) from error
+
+
+def _temporal_fold_run_name(context: dg.AssetExecutionContext) -> str:
+    """Name one dynamic fold with its application-owned fold identity."""
+
+    return f"Bike demand temporal validation fold {_temporal_fold_number(context)}"
+
+
 @dg_artifact(
     workflow=run_bike_demand_release_cycle_start,
     publisher=_publisher_for,
@@ -424,6 +447,7 @@ def bike_demand_prepare_features(
     partitions_def=fold_partitions,
     context_parameter="context",
     application_profiles=_release_cycle_profiles,
+    run_name=_temporal_fold_run_name,
 )
 def bike_demand_train_fold(
     feature_table: ArtifactHandle,
@@ -432,19 +456,11 @@ def bike_demand_train_fold(
 ) -> object:
     """Train exactly the temporal fold named by this Dagster partition."""
 
-    partition_key = context.partition_key
-    if not isinstance(partition_key, dg.MultiPartitionKey):
-        raise ValueError("bike_demand_train_fold requires a multi-partition key")
-    fold_key = partition_key.keys_by_dimension["fold"]
-    if not fold_key.startswith("fold-"):
-        raise ValueError(f"unexpected temporal-fold partition key {fold_key!r}")
-    try:
-        fold_number = int(fold_key.removeprefix("fold-"))
-    except ValueError as error:
-        raise ValueError(
-            f"unexpected temporal-fold partition key {fold_key!r}"
-        ) from error
-    return train_fold(feature_table, fold_definition, fold_number=fold_number)
+    return train_fold(
+        feature_table,
+        fold_definition,
+        fold_number=_temporal_fold_number(context),
+    )
 
 
 @dg_computation(

@@ -234,8 +234,11 @@ example's partition dimension. The final ArtifactSet UUID is the actual
 The example also declares one OCLP `@run` template for each orchestration
 phase: **Bike demand release-cycle start**, **Bike demand cycle preparation**,
 **Bike demand temporal validation fold**, and **Bike demand model release**.
-Cyclops therefore receives application-owned OCLP names for the projected
-runs; it does not need to know about Dagster to render them.
+The dynamic fold projection explicitly resolves that fold template to **Bike
+demand temporal validation fold 1**, **2**, and so on from the application
+partition it is materializing. Cyclops therefore receives application-owned
+OCLP names for the projected runs; it does not need to know about Dagster to
+render them.
 
 Dagster displays the OCLP run ID, record directory, execution or Artifact ID,
 and selected scheduler context in every materialized asset's metadata panel.

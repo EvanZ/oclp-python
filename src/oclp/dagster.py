@@ -55,6 +55,7 @@ SourceFactory: TypeAlias = Callable[[DagsterContext], ImplementationSource]
 ApplicationProfiles: TypeAlias = ProfileBindings | Callable[
     [DagsterContext], ProfileBindings
 ]
+RunName: TypeAlias = str | Callable[[DagsterContext], str]
 
 _CONTEXT_FIELDS = frozenset(
     {"run_id", "asset_key", "step_key", "partition_key", "retry_number"}
@@ -308,6 +309,7 @@ def dg_artifact(
     config_schema: object | None = None,
     deps: object | None = None,
     application_profiles: ApplicationProfiles | None = None,
+    run_name: RunName | None = None,
     context_parameter: str = "context",
 ) -> Callable[[Callable[Parameters, ArtifactHandle]], object]:
     """Project one existing OCLP Artifact acquisition as a Dagster asset.
@@ -356,6 +358,11 @@ def dg_artifact(
                     workflow,
                     publisher=local_publisher,
                     run_id=step.run_id,
+                    run_name=_resolve_run_name(
+                        run_name,
+                        context=context,
+                        decorator="dg_artifact",
+                    ),
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
@@ -417,6 +424,7 @@ def dg_computation(
     config_schema: object | None = None,
     deps: object | None = None,
     application_profiles: ApplicationProfiles | None = None,
+    run_name: RunName | None = None,
     context_parameter: str | None = None,
     target: Callable[..., object] | None = None,
 ) -> Callable[[Callable[Parameters, Result]], object]:
@@ -530,6 +538,11 @@ def dg_computation(
                     workflow,
                     publisher=local_publisher,
                     run_id=step.run_id,
+                    run_name=_resolve_run_name(
+                        run_name,
+                        context=context,
+                        decorator="dg_computation",
+                    ),
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
@@ -658,6 +671,7 @@ def dg_artifact_set(
     config_schema: object | None = None,
     deps: object | None = None,
     application_profiles: ApplicationProfiles | None = None,
+    run_name: RunName | None = None,
 ) -> Callable[[Callable[Parameters, object]], object]:
     """Project an explicit OCLP ArtifactSet assembly as a Dagster asset.
 
@@ -714,6 +728,11 @@ def dg_artifact_set(
                     workflow,
                     publisher=local_publisher,
                     run_id=step.run_id,
+                    run_name=_resolve_run_name(
+                        run_name,
+                        context=context,
+                        decorator="dg_artifact_set",
+                    ),
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
@@ -890,6 +909,31 @@ def _resolve_application_profiles(
             )
         resolved[name] = dict(value)
     return resolved or None
+
+
+def _resolve_run_name(
+    declaration: RunName | None,
+    *,
+    context: DagsterContext,
+    decorator: str,
+) -> str | None:
+    """Resolve one explicit application-owned OCLP run display name.
+
+    The decorated workflow remains the default source of the portable run
+    name. A granular projection can opt into a static name or a context
+    resolver when independently scheduled application work needs a more
+    precise title. Cyclops receives only the resulting ordinary OCLP run
+    profile; it does not need any scheduler-specific behavior.
+    """
+
+    if declaration is None:
+        return None
+    resolved = declaration(context) if callable(declaration) else declaration
+    if not isinstance(resolved, str) or not resolved:
+        raise ValueError(
+            f"{decorator} run_name must resolve to a non-empty string"
+        )
+    return resolved
 
 
 def _execution_profiles(

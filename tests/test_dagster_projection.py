@@ -481,6 +481,7 @@ def test_oclp_artifact_io_manager_rehydrates_a_partitioned_handle_in_a_later_run
         inputs={"source": dg.AssetIn(key=dg.AssetKey("persistent_raw"))},
         partitions_def=partitions,
         io_manager_key=io_manager_key,
+        run_name=lambda context: f"Increment persisted {context.partition_key}",
     )(increment_source)
 
     first = dg.materialize(
@@ -511,6 +512,7 @@ def test_oclp_artifact_io_manager_rehydrates_a_partitioned_handle_in_a_later_run
     ]
     assert len(executions) == 1
     assert executions[0].profiles[DAGSTER_PROFILE]["partition_key"] == "cycle-a"
+    assert executions[0].profiles["run"]["run_name"] == "Increment persisted cycle-a"
 
 
 def test_partition_mappings_fan_out_and_fan_in_exact_artifact_handles(tmp_path):

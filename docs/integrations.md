@@ -103,6 +103,26 @@ contexts publish partial collections. An `@artifact_set` already present on a
 projected Computation is deferred for the same reason; use one explicit
 `dg_artifact_set` for the cross-step collection.
 
+The workflow's `@run(name=...)` supplies the default OCLP run title. A granular
+projection can opt into `run_name=` with either a static string or a
+`context -> string` resolver when its independently scheduled application work
+needs a more precise OCLP name. This changes the ordinary `profiles.run` value;
+it is not a Dagster-specific display convention.
+
+```python
+@dg_computation(
+    workflow=train,
+    publisher=publisher_for_context,
+    source=source_for_context,
+    asset_key="fold_model",
+    inputs={...},
+    run_name=lambda context: f"Temporal validation {context.partition_key}",
+)
+@computation(...)
+def train_fold(...):
+    ...
+```
+
 When the original decorated callable lives in another module, a decorated
 proxy can keep the Dagster definition declarative without duplicating the
 OCLP declaration. Set `target` to the existing callable and have the proxy
