@@ -86,6 +86,14 @@ class _ReleaseSmokeTestResult:
     response: RecordReference
 
 
+_BIKE_DEMAND_RUN_ADAPTERS = (
+    MlflowAdapter(
+        experiment_name=MLFLOW_EXPERIMENT_NAME,
+        parent_profile=RELEASE_CYCLE_PROFILE,
+    ),
+)
+
+
 @mlflow(
     run_parameters={
         "materialization_id": "materialization_id",
@@ -96,12 +104,7 @@ class _ReleaseSmokeTestResult:
 )
 @run(
     name="Bike demand model training",
-    adapters=(
-        MlflowAdapter(
-            experiment_name=MLFLOW_EXPERIMENT_NAME,
-            parent_profile=RELEASE_CYCLE_PROFILE,
-        ),
-    ),
+    adapters=_BIKE_DEMAND_RUN_ADAPTERS,
     required_evidence_policy="raise",
 )
 def run_bike_training(
@@ -165,6 +168,46 @@ def run_bike_training(
 
     holdout_result = score_holdout(final_model, feature_table)
     chart_holdout_demand_forecast(holdout_result["predictions"])
+
+
+@run(
+    name="Bike demand release-cycle start",
+    adapters=_BIKE_DEMAND_RUN_ADAPTERS,
+    required_evidence_policy="raise",
+)
+def run_bike_demand_release_cycle_start() -> None:
+    """Declare the OCLP run policy for the unpartitioned cycle-start asset.
+
+    Granular Dagster projections use this declaration as configuration only;
+    they do not invoke this empty workflow body.
+    """
+
+
+@run(
+    name="Bike demand cycle preparation",
+    adapters=_BIKE_DEMAND_RUN_ADAPTERS,
+    required_evidence_policy="raise",
+)
+def run_bike_demand_prepare_cycle() -> None:
+    """Declare the OCLP run policy for source and feature preparation."""
+
+
+@run(
+    name="Bike demand temporal validation fold",
+    adapters=_BIKE_DEMAND_RUN_ADAPTERS,
+    required_evidence_policy="raise",
+)
+def run_bike_demand_temporal_fold() -> None:
+    """Declare the OCLP run policy for one dynamic temporal-fold run."""
+
+
+@run(
+    name="Bike demand model release",
+    adapters=_BIKE_DEMAND_RUN_ADAPTERS,
+    required_evidence_policy="raise",
+)
+def run_bike_demand_aggregate_cycle() -> None:
+    """Declare the OCLP run policy for evaluation and release assembly."""
 
 
 @run(

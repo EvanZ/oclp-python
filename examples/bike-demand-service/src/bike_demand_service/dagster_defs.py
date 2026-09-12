@@ -48,7 +48,12 @@ from bike_demand_service.release_cycle import (
     MLFLOW_EXPERIMENT_NAME,
     release_cycle_profiles,
 )
-from bike_demand_service.runner import run_bike_training
+from bike_demand_service.runner import (
+    run_bike_demand_aggregate_cycle,
+    run_bike_demand_prepare_cycle,
+    run_bike_demand_release_cycle_start,
+    run_bike_demand_temporal_fold,
+)
 
 _TEMPORAL_VALIDATION_RMSE_MAX = 250
 _IO_MANAGER_KEY = "oclp_artifact_io_manager"
@@ -261,7 +266,7 @@ def _asset_out(key: str) -> dg.AssetOut:
 
 
 @dg_artifact(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_release_cycle_start,
     publisher=_publisher_for,
     source=_source_for,
     asset_key="bike_demand_release_cycle_request",
@@ -294,7 +299,7 @@ def bike_demand_release_cycle_request(
 
 
 @dg_artifact(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_prepare_cycle,
     publisher=_publisher_for,
     source=_source_for,
     asset_key="bike_demand_release_cycle",
@@ -327,7 +332,7 @@ def bike_demand_release_cycle(context: dg.AssetExecutionContext) -> ArtifactHand
 
 
 @dg_artifact(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_prepare_cycle,
     publisher=_publisher_for,
     source=_source_for,
     asset_key="bike_demand_training_plan",
@@ -351,7 +356,7 @@ def bike_demand_training_plan(context: dg.AssetExecutionContext) -> ArtifactHand
 
 
 @dg_artifact(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_prepare_cycle,
     publisher=_publisher_for,
     source=_source_for,
     asset_key="bike_demand_raw_source",
@@ -368,7 +373,7 @@ def bike_demand_raw_source() -> ArtifactHandle:
 
 
 @dg_computation(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_prepare_cycle,
     publisher=_publisher_for,
     source=_source_for,
     target=prepare_features,
@@ -396,7 +401,7 @@ def bike_demand_prepare_features(
 
 
 @dg_computation(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_temporal_fold,
     publisher=_publisher_for,
     source=_source_for,
     target=train_fold,
@@ -443,7 +448,7 @@ def bike_demand_train_fold(
 
 
 @dg_computation(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_aggregate_cycle,
     publisher=_publisher_for,
     source=_source_for,
     target=evaluate_folds,
@@ -481,7 +486,7 @@ def bike_demand_evaluate_candidate(
 
 
 @dg_computation(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_aggregate_cycle,
     publisher=_publisher_for,
     source=_source_for,
     target=chart_temporal_validation_quality,
@@ -516,7 +521,7 @@ def bike_demand_chart_temporal_validation(
 
 
 @dg_computation(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_aggregate_cycle,
     publisher=_publisher_for,
     source=_source_for,
     target=train_final_model,
@@ -544,7 +549,7 @@ def bike_demand_train_final_model(
 
 
 @dg_computation(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_aggregate_cycle,
     publisher=_publisher_for,
     source=_source_for,
     target=score_holdout,
@@ -570,7 +575,7 @@ def bike_demand_score_holdout(
 
 
 @dg_computation(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_aggregate_cycle,
     publisher=_publisher_for,
     source=_source_for,
     target=chart_holdout_demand_forecast,
@@ -590,7 +595,7 @@ def bike_demand_chart_holdout_forecast(predictions: ArtifactHandle) -> object:
 
 
 @dg_artifact_set(
-    workflow=run_bike_training,
+    workflow=run_bike_demand_aggregate_cycle,
     publisher=_publisher_for,
     source=_source_for,
     asset_key="bike_demand_model_release",

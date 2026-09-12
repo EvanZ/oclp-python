@@ -22,6 +22,7 @@ from oclp import (
     computation,
     computation_input_artifact_types,
     computation_template,
+    run_template,
 )
 from oclp.models import Execution, PortDefinition
 from oclp.publishing import LocalArtifactPublisher
@@ -42,6 +43,31 @@ from bike_demand_service.modeling import (
     score_holdout,
     temporal_validation_quality,
 )
+from bike_demand_service.runner import (
+    run_bike_demand_aggregate_cycle,
+    run_bike_demand_prepare_cycle,
+    run_bike_demand_release_cycle_start,
+    run_bike_demand_temporal_fold,
+)
+
+
+def test_dagster_cycle_phases_use_explicit_oclp_run_templates() -> None:
+    """Cyclops titles each phase from an app-owned OCLP run declaration."""
+
+    assert [
+        run_template(workflow).name
+        for workflow in (
+            run_bike_demand_release_cycle_start,
+            run_bike_demand_prepare_cycle,
+            run_bike_demand_temporal_fold,
+            run_bike_demand_aggregate_cycle,
+        )
+    ] == [
+        "Bike demand release-cycle start",
+        "Bike demand cycle preparation",
+        "Bike demand temporal validation fold",
+        "Bike demand model release",
+    ]
 
 
 @computation(
