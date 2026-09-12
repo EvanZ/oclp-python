@@ -15,6 +15,12 @@ dependencies = [
   "uvicorn[standard]>=0.34,<1",
 ]
 
+[project.optional-dependencies]
+dagster = [
+  "dagster>=1.11,<2",
+  "dagster-webserver>=1.11,<2",
+]
+
 [project.scripts]
 bike-demand = "bike_demand_service.cli:main"
 

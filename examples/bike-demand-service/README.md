@@ -188,6 +188,26 @@ CatBoost model under `oclp/`. Non-model payloads are not copied unless the
 application explicitly selects them. The canonical OCLP Artifact remains the
 source of truth.
 
+## Dagster UI dogfood
+
+The optional Dagster definition runs the existing OCLP- and MLflow-instrumented
+training workflow as one local Dagster asset. It does not duplicate the
+workflow's OCLP declarations or turn the Dagster asset into a synthetic OCLP
+Computation. After a materialization, Dagster displays the OCLP run ID, record
+directory, and selected Dagster context in the asset metadata panel.
+
+```bash
+uv sync --group dev --extra dagster
+uv run dagster dev -m bike_demand_service.dagster_defs --port 3000
+```
+
+Open <http://127.0.0.1:3000>, select **bike_demand_training**, and materialize
+the **bike_demand_model_release** asset. The job uses Dagster's in-process
+executor because the dogfood store has a local single-writer DuckDB catalog.
+It writes to the same ignored `data/` area used by the ordinary demo: OCLP
+records under `data/oclp-0.3`, immutable payloads under `data/runs`, and the
+MLflow mirror under `data/mlflow`.
+
 ## Implementation sequence
 
 1. Add request-volume sampling and redaction policy for the service boundary.

@@ -34,6 +34,9 @@ Issues = "https://github.com/EvanZ/oclp-python/issues"
 Changelog = "https://github.com/EvanZ/oclp-python/releases"
 
 [project.optional-dependencies]
+dagster = [
+  "dagster>=1.11,<2",
+]
 duckdb = [
   "duckdb>=1.1,<2",
 ]

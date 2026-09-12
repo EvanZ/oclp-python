@@ -1,5 +1,42 @@
 # Artifact formats and library integrations
 
+## Dagster asset observation
+
+Install the optional Dagster integration with:
+
+```bash
+pip install "oclp[dagster]"
+```
+
+`@dagster_asset(...)` is applied directly inside Dagster's `@asset`. It opens
+the OCLP observation context for an existing `@run` workflow, while that
+workflow's existing `@computation` and Artifact declarations continue to
+produce the only OCLP records. On completion, the adapter adds the OCLP run
+identity, record-store path, outcome, and an explicit selection of Dagster
+context fields to the Dagster asset materialization metadata.
+
+```python
+import dagster as dg
+
+from oclp.dagster import dagster_asset
+
+
+@dg.asset
+@dagster_asset(
+    workflow=train,
+    publisher=publisher_for_dagster_context,
+    source=source_for_dagster_context,
+)
+def trained_model(context: dg.AssetExecutionContext) -> None:
+    train(...)
+```
+
+This is an integration boundary, not an orchestration DSL. It never derives an
+OCLP Computation from an asset, creates a parent Execution for a Dagster run,
+or reflects arbitrary Dagster context. The initial allow-list is `run_id`,
+`asset_key`, `partition_key`, and `retry_number`; select only values that are
+useful to navigate the Dagster materialization.
+
 An OCLP `Artifact` is format-neutral. The Python SDK's concrete
 `ArtifactType` declarations provide the local persistence and loading policy
 for an Artifact payload. This page is the canonical inventory of integrations

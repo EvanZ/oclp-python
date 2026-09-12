@@ -86,3 +86,27 @@ jobs:
           .venv-wheel-smoke/bin/oclp --help
           .venv-sdist-smoke/bin/python -c "from oclp import Artifact, canonical_json_bytes; assert Artifact and canonical_json_bytes"
           .venv-sdist-smoke/bin/oclp --help
+
+  dagster:
+    name: Test Dagster integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out SDK
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.32"
+          enable-cache: false
+
+      - name: Install Dagster integration dependencies
+        run: uv sync --locked --group dev --extra dagster
+
+      - name: Test Dagster adapter
+        run: uv run pytest tests/test_dagster_adapter.py
