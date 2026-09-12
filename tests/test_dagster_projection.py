@@ -136,6 +136,7 @@ def test_dagster_run_context_rehydrates_one_run_id_in_separate_workers():
     class WorkerContext:
         def __init__(self, asset_key: str) -> None:
             self.run = SimpleNamespace(run_id="scheduled-run-without-a-uuid")
+            self.job_name = "scheduled-job"
             self.asset_key = AssetKey(asset_key)
             self.has_partition_key = False
             self.retry_number = 0
@@ -149,6 +150,8 @@ def test_dagster_run_context_rehydrates_one_run_id_in_separate_workers():
     second = dagster_run_context(WorkerContext("second"))
 
     assert first.run_id == second.run_id
+    assert first.profile.job_name == second.profile.job_name == "scheduled-job"
+    assert first.run_name == second.run_name == "scheduled-job"
     assert first.profile.asset_key == "first"
     assert second.profile.asset_key == "second"
 
@@ -205,6 +208,12 @@ def test_projected_artifact_and_computations_form_one_dagster_graph(tmp_path):
     assert {
         execution.profiles[DAGSTER_PROFILE]["asset_key"] for execution in executions
     } == {"incremented_numbers", "doubled_numbers"}
+    assert {
+        execution.profiles["run"]["run_name"] for execution in executions
+    } == {
+        execution.profiles[DAGSTER_PROFILE]["job_name"]
+        for execution in executions
+    }
     executions_by_asset = {
         execution.profiles[DAGSTER_PROFILE]["asset_key"]: execution
         for execution in executions
@@ -511,6 +520,9 @@ def test_oclp_artifact_io_manager_rehydrates_a_partitioned_handle_in_a_later_run
     ]
     assert len(executions) == 1
     assert executions[0].profiles[DAGSTER_PROFILE]["partition_key"] == "cycle-a"
+    assert executions[0].profiles["run"]["run_name"] == (
+        executions[0].profiles[DAGSTER_PROFILE]["job_name"] + " [cycle-a]"
+    )
 
 
 def test_partition_mappings_fan_out_and_fan_in_exact_artifact_handles(tmp_path):

@@ -139,14 +139,28 @@ class RunTemplate:
                 "required_evidence_policy must be either 'continue' or 'raise'"
             )
 
-    def profile_for(self, run_id: UUID) -> ProfileBindings:
-        """Return the portable profile binding for one concrete run."""
+    def profile_for(
+        self,
+        run_id: UUID,
+        *,
+        run_name: str | None = None,
+    ) -> ProfileBindings:
+        """Return the portable profile binding for one concrete run.
+
+        ``name`` is the workflow-declared default. Scheduler integrations can
+        supply a concrete run label while retaining the same immutable UUID
+        and all other workflow policy.
+        """
+
+        resolved_name = self.name if run_name is None else run_name
+        if not isinstance(resolved_name, str) or not resolved_name:
+            raise ValueError("OCLP run names must be non-empty strings")
 
         return {
             RUN_PROFILE: {
                 "version": RUN_PROFILE_VERSION,
                 "run_id": str(run_id),
-                "run_name": self.name,
+                "run_name": resolved_name,
             }
         }
 
@@ -234,6 +248,7 @@ def observe_run(
     *,
     publisher: LocalArtifactPublisher,
     run_id: UUID | None = None,
+    run_name: str | None = None,
     source: ImplementationSource,
     parent_execution: RecordReference | None = None,
     profiles: ProfileBindings | None = None,
@@ -247,8 +262,11 @@ def observe_run(
     Storage and source selection remain application bootstrap concerns. The
     SDK owns the resulting runtime, UUID-based run profile binding, artifact
     materialization, Execution/Event publication, and failure capture. Extra
-    profiles may be supplied, but may not replace the run profile
-    derived from the workflow declaration. ``finalize_decorated_artifact_sets``
+    profiles may be supplied, but may not replace the run profile derived from
+    the workflow declaration and concrete UUID. ``run_name`` optionally
+    replaces only the workflow declaration's human-readable default, which
+    lets a scheduler identify a concrete job/partition without changing run
+    identity or workflow policy. ``finalize_decorated_artifact_sets``
     is normally enabled. A scheduler projection may disable it when a named
     downstream boundary assembles a run-wide ArtifactSet from independently
     materialized steps. ``record_profiles`` are application-owned bindings
@@ -261,7 +279,10 @@ def observe_run(
     concrete_run_id = run_id or uuid4()
     merged_profiles: ProfileBindings = dict(profiles or {})
     existing = merged_profiles.get(RUN_PROFILE)
-    generated = template.profile_for(concrete_run_id)[RUN_PROFILE]
+    generated = template.profile_for(
+        concrete_run_id,
+        run_name=run_name,
+    )[RUN_PROFILE]
     if existing is not None and existing != generated:
         raise ValueError(
             "observe_run derives profiles.run from the decorated workflow and "
@@ -280,7 +301,7 @@ def observe_run(
         record_profiles=record_profiles,
         artifact_adapters=artifact_adapters,
         adapters=active_adapters,
-        run_name=template.name,
+        run_name=generated["run_name"],
         required_evidence_policy=template.required_evidence_policy,
         finalize_decorated_artifact_sets=finalize_decorated_artifact_sets,
     )

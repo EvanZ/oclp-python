@@ -57,7 +57,14 @@ ApplicationProfiles: TypeAlias = ProfileBindings | Callable[
 ]
 
 _CONTEXT_FIELDS = frozenset(
-    {"run_id", "asset_key", "step_key", "partition_key", "retry_number"}
+    {
+        "run_id",
+        "job_name",
+        "asset_key",
+        "step_key",
+        "partition_key",
+        "retry_number",
+    }
 )
 _SOURCE_TYPES = (GitSource, ArtifactSource, ServiceSource, OpaqueSource)
 
@@ -73,6 +80,7 @@ class DagsterExecutionProfile(OclpModel):
 
     version: Literal["0.3.0-draft"] = DAGSTER_PROFILE_VERSION
     dagster_run_id: str = Field(min_length=1)
+    job_name: str = Field(min_length=1)
     asset_key: str = Field(min_length=1)
     asset_keys: tuple[str, ...] = ()
     step_key: str = Field(min_length=1)
@@ -100,6 +108,19 @@ class DagsterRunContext:
         return {
             DAGSTER_PROFILE: self.profile.model_dump(mode="json"),
         }
+
+    @property
+    def run_name(self) -> str:
+        """Return the readable OCLP title shared by one Dagster run.
+
+        All projected assets in the same Dagster job share this label and UUID.
+        Separate partition runs retain the job name but gain their exact
+        partition key, making Explorer's OCLP Run nodes distinguishable.
+        """
+
+        if self.profile.partition_key is None:
+            return self.profile.job_name
+        return f"{self.profile.job_name} [{self.profile.partition_key}]"
 
 
 @dataclass
@@ -356,6 +377,7 @@ def dg_artifact(
                     workflow,
                     publisher=local_publisher,
                     run_id=step.run_id,
+                    run_name=step.run_name,
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
@@ -530,6 +552,7 @@ def dg_computation(
                     workflow,
                     publisher=local_publisher,
                     run_id=step.run_id,
+                    run_name=step.run_name,
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
@@ -714,6 +737,7 @@ def dg_artifact_set(
                     workflow,
                     publisher=local_publisher,
                     run_id=step.run_id,
+                    run_name=step.run_name,
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
@@ -770,6 +794,13 @@ def _context_value(context: DagsterContext, field: str) -> object | None:
 
     if field == "run_id":
         return str(context.run.run_id)
+    if field == "job_name":
+        job_name = getattr(context, "job_name", None)
+        if not isinstance(job_name, str) or not job_name:
+            job_name = getattr(context.run, "job_name", None)
+        if not isinstance(job_name, str) or not job_name:
+            raise ValueError("Dagster context must expose a non-empty job_name")
+        return job_name
     if field == "asset_key":
         return _context_asset_keys(context)[0]
     if field == "step_key":
@@ -817,6 +848,7 @@ def dagster_run_context(context: DagsterContext) -> DagsterRunContext:
         run_id=run_id,
         profile=DagsterExecutionProfile(
             dagster_run_id=dagster_run_id,
+            job_name=str(_context_value(context, "job_name")),
             asset_key=asset_keys[0],
             asset_keys=asset_keys,
             step_key=str(_context_value(context, "step_key")),
@@ -1236,6 +1268,8 @@ def _context_value_from_profile(
 
     if field == "run_id":
         return profile.dagster_run_id
+    if field == "job_name":
+        return profile.job_name
     if field == "asset_key":
         return profile.asset_key
     if field == "step_key":

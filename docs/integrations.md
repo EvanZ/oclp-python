@@ -34,8 +34,8 @@ def trained_model(context: dg.AssetExecutionContext) -> None:
 This is an integration boundary, not an orchestration DSL. It never derives an
 OCLP Computation from an asset, creates a parent Execution for a Dagster run,
 or reflects arbitrary Dagster context. The initial allow-list is `run_id`,
-`asset_key`, `partition_key`, and `retry_number`; select only values that are
-useful to navigate the Dagster materialization. `dagster_asset` remains a
+`job_name`, `asset_key`, `partition_key`, and `retry_number`; select only
+values that are useful to navigate the Dagster materialization. `dagster_asset` remains a
 lower-level compatibility adapter for applications that need to compose a
 custom Dagster decorator stack.
 
@@ -103,6 +103,13 @@ contexts publish partial collections. An `@artifact_set` already present on a
 projected Computation is deferred for the same reason; use one explicit
 `dg_artifact_set` for the cross-step collection.
 
+Every granular projection uses the Dagster job name as the OCLP run title and
+appends the partition key when present. All assets in one Dagster job therefore
+retain one shared OCLP run UUID and title, while independently launched jobs
+and fold partitions have distinct, legible Explorer nodes (for example,
+`bike_demand_train_fold_job [cycle-a|fold-2]`). The workflow's `@run(name=...)`
+remains the default title outside a Dagster granular projection.
+
 When the original decorated callable lives in another module, a decorated
 proxy can keep the Dagster definition declarative without duplicating the
 OCLP declaration. Set `target` to the existing callable and have the proxy
@@ -130,7 +137,7 @@ def customer_feature_assets(source, plan):
 Every projected step independently opens an OCLP observation with a UUID
 derived from the Dagster run ID. Executions from all steps and workers in that
 Dagster run therefore share `profiles.run`; their `profiles.dagster` binding
-retains generic Dagster run, asset, step, partition, and retry facts. A retry
+retains generic Dagster run, job, asset, step, partition, and retry facts. A retry
 creates a new immutable OCLP Execution with the same run identity and a new
 retry number. A selected Dagster subset emits records only for steps Dagster
 executes.
