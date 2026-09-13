@@ -1,12 +1,102 @@
 # Artifact formats and library integrations
 
-## Dagster workflow projection
+## Dagster integration
 
 Install the optional Dagster integration with:
 
 ```bash
 pip install "oclp[dagster]"
 ```
+
+### Motivation and boundary
+
+OCLP and Dagster describe different things. An OCLP decorator declares a
+durable application boundary next to the callable that owns it: an Artifact
+representation, a Computation's input/output contract, or a release
+collection. A Dagster asset declares orchestration: asset keys, dependencies,
+partitions, retries, I/O management, and scheduling.
+
+The SDK deliberately does not infer an OCLP Computation from `@dagster.asset`.
+An asset's Python return value does not say which durable Artifact
+representation it has, which inputs are exact immutable Artifacts, whether
+several outputs are one atomic Execution, or whether a downstream collection
+is an ArtifactSet. Keeping the OCLP declaration beside the application
+function makes that contract scheduler-neutral: the same function can run in a
+test, a CLI workflow, or a different orchestrator without changing its OCLP
+meaning.
+
+The Dagster decorators are therefore **projections**, not a second modelling
+system. They read the existing OCLP declaration and create the corresponding
+Dagster asset definition. They do not create synthetic OCLP Computations,
+parent Executions, or dataflow edges merely because Dagster has an asset graph.
+
+### Why an observation wrapper is necessary
+
+`@run` and `@computation` are declarations, not process-global instrumentation.
+`@run` supplies the template for a concrete run; `@computation` calls its
+ordinary Python body when there is no active OCLP observation. This remains
+useful for unit tests and reusable application functions, but it means that
+stacking only `@dagster.asset` and `@computation` does **not** publish an OCLP
+Execution or its Artifact bindings.
+
+`observe_run(...)` is the activation boundary. It selects the publisher and
+source basis, creates the concrete `profiles.run` binding, activates the
+runtime that turns decorated calls into OCLP records, captures failures, and
+runs optional adapters such as MLflow. You may open that context manually
+inside every Dagster asset, but then each asset must also correctly handle
+Artifact handles, output-port mapping, scheduler metadata, and cross-worker
+handoff.
+
+`dg_artifact`, `dg_computation`, and `dg_artifact_set` open that observation
+for each projected Dagster step. They also map explicit `AssetIn`/`AssetOut`
+edges to exact OCLP Artifact handles, return those handles through Dagster's
+I/O manager, attach the selected scheduler facts under `profiles.dagster` when
+they emit a real OCLP Execution, and publish cross-navigation metadata. That
+mapping—not merely the `observe_run` call—is why the granular projection
+decorators exist.
+
+### Why decorators and their order matter
+
+The OCLP declaration is the canonical, reusable inner layer; the Dagster
+projection is the outer layer that reads it. Python applies decorators from
+the bottom up, so use this order:
+
+```python
+@dg_computation(...)
+@computation(...)
+def prepare_features(...):
+    ...
+```
+
+Likewise, place `@dg_artifact(...)` outside its Artifact decorator:
+
+```python
+@dg_artifact(...)
+@json_artifact(...)
+def load_source(...):
+    ...
+```
+
+Reversing either stack gives an OCLP declaration decorator a Dagster asset
+definition rather than an ordinary function, so it cannot attach or inspect
+the intended OCLP contract. `@dg_artifact_set(...)` is different: it is the
+sole decorator on a marker function because it directly assembles an explicit
+ArtifactSet from already materialized Artifact inputs.
+
+The workflow-level and lower-level compatibility APIs have their own forms:
+
+| Need | Use | Decorator form |
+| --- | --- | --- |
+| Expose one existing OCLP workflow as one Dagster asset | `@dg_workflow` | It creates the Dagster asset itself; do not add `@dg.asset`. |
+| Add observation around a custom, manually composed Dagster asset | `@dagster_asset` | `@dg.asset` outside `@dagster_asset(...)`. |
+| Make OCLP Artifact, Computation, and ArtifactSet boundaries visible as separate Dagster assets | `@dg_artifact`, `@dg_computation`, `@dg_artifact_set` | Projection outside the canonical OCLP declaration; do not stack `@dg.asset` around them. |
+
+Use the workflow projection for an intentionally monolithic existing workflow.
+Use the granular projections when Dagster should orchestrate and display the
+individual data and model boundaries. In both cases, the OCLP decorators—not
+Dagster's graph alone—remain the source of durable provenance semantics.
+
+## Dagster workflow projection
 
 `@dg_workflow(...)` projects an existing `@run` workflow as one Dagster asset.
 The body still supplies application-specific workflow arguments; its existing
@@ -37,7 +127,24 @@ or reflects arbitrary Dagster context. The initial allow-list is `run_id`,
 `asset_key`, `partition_key`, and `retry_number`; select only values that are
 useful to navigate the Dagster materialization. `dagster_asset` remains a
 lower-level compatibility adapter for applications that need to compose a
-custom Dagster decorator stack.
+custom Dagster decorator stack:
+
+```python
+from oclp.dagster import dagster_asset
+
+
+@dg.asset
+@dagster_asset(
+    workflow=train,
+    publisher=publisher_for_context,
+    source=source_for_context,
+)
+def trained_model(context: dg.AssetExecutionContext) -> None:
+    train(...)
+```
+
+Unlike `dg_workflow`, `dagster_asset` returns an ordinary wrapped callable, so
+the outer `@dg.asset` is required in this compatibility form.
 
 ## Dagster graph projections
 
