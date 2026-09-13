@@ -30,9 +30,11 @@ does not change how a producer executes a job.
 
 The base package has no data-science or model-framework dependency. Install
 only the integrations a project declares—such as `oclp[catboost]` or
-`oclp[xgboost]`. See [Artifact formats and library integrations](integrations.md)
-for the supported representations, their persistence formats, installation
-extras, and compatibility boundaries.
+`oclp[xgboost]`. See [Artifacts](artifacts.md) for supported
+representations, persistence formats, installation extras, and compatibility
+boundaries. The Integrations section covers [Dagster](dagster.md)
+orchestration, [MLflow](mlflow.md) experiment tracking, and the local
+[DuckDB catalog](catalog.md).
 
 ## Boundaries
 
@@ -41,7 +43,7 @@ dependency capture, a remote artifact store, or a model tracker. Those are
 application or ecosystem concerns that can produce and consume the same OCLP
 records.
 
-Start with [getting started](getting-started.md), then see [records and
-canonicalization](records.md) for the core SDK operations. For a complete
+Start with [How to Use](getting-started.md), then see [Computations and
+Executions](computations-and-executions.md) for the core SDK workflow. For a complete
 consumer implementation with CatBoost, a local DuckDB catalog, and parallel
-MLflow experiment tracking, see the [end-to-end bike-demand example](bike-demand-example.md).
+MLflow experiment tracking, see the [bike-demand tutorial](bike-demand-example.md).

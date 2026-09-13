@@ -234,24 +234,52 @@ carries only the MLflow parent-run ID. “Cycle” remains solely this example's
 partition dimension. The final ArtifactSet UUID is the actual `release_id`,
 not the lifecycle ID.
 
-The example also declares one OCLP `@run` template for each orchestration
-phase: **Bike demand release-cycle start**, **Bike demand cycle preparation**,
-**Bike demand temporal validation fold**, and **Bike demand model release**.
-The dynamic fold projection explicitly resolves that fold template to **Bike
-demand temporal validation fold 1**, **2**, and so on from the application
-partition it is materializing. Cyclops therefore receives application-owned
-OCLP names for the projected runs; it does not need to know about Dagster to
-render them.
+Each native Dagster asset wraps the canonical OCLP Artifact, Computation, or
+ArtifactSet declaration with `dagster_adapter()`. The adapter derives the
+OCLP run label from the native asset declaration and records the scheduler
+facts as generic context; it does not ask Cyclops to interpret Dagster job or
+run names. The dynamic fold's partition identity remains on its generic
+Dagster profile, while the OCLP Computation remains **Train bike demand fold**.
+
+This is a separate Dagster implementation, not a Dagster call into the
+ordinary `runner.py` workflow. `data.py` and `modeling.py` keep that ordinary
+OCLP implementation free of a Dagster dependency. The `dagster/` package
+declares its own OCLP contracts directly with SDK decorators and activates them
+on its own native Dagster asset functions with `dagster_adapter()`;
+`dagster_defs.py` is only the code-location entry point. The two
+implementations may share ordinary domain helpers, but not application-defined
+OCLP decorator factories or decorated workflow functions.
 
 Dagster displays the OCLP run ID, record directory, execution or Artifact ID,
 and selected scheduler context in every materialized asset's metadata panel.
 
 ```bash
 uv sync --group dev --extra dagster
-uv run dagster dev -m bike_demand_service.dagster_defs --port 3000
+./start-dagster.sh
 ```
 
 Open <http://127.0.0.1:3000> and launch **bike_demand_start_release_cycle**.
+Set `DAGSTER_PORT` when port 3000 is already occupied, for example
+`DAGSTER_PORT=3001 ./start-dagster.sh`. Additional `dagster dev` options can
+be passed through to the script.
+
+### Start the local development stack
+
+With a sibling `oclp-explorer` checkout, start MLflow, Dagster, and the
+Cyclops API and UI together:
+
+```bash
+./start-local.sh
+```
+
+It reuses only its own already-running services and refuses to take over a
+port used by another application. Cyclops uses its own synced environment, so
+initialize it once with `cd ../oclp-explorer && uv sync --all-groups`. The
+default URLs are Dagster at
+<http://127.0.0.1:3000>, MLflow at <http://127.0.0.1:5000>, and Cyclops at
+<http://127.0.0.1:5175>. Override the sibling explorer location with
+`OCLP_EXPLORER_ROOT=/path/to/oclp-explorer ./start-local.sh`; service logs are
+stored in the ignored `data/local-services/` directory.
 The four sensors are enabled by default: they start preparation, fan out the
 plan, fan in the completed folds, and finish the release-cycle MLflow parent.
 This downloads

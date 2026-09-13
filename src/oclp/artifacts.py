@@ -36,6 +36,10 @@ from typing import (
 from pydantic import Field
 
 from oclp._descriptions import resolve_callable_description
+from oclp.declaration_adapters import (
+    DeclarationAdapter,
+    apply_declaration_adapters,
+)
 from oclp.models import JsonValue, OclpModel, ProfileBindings
 
 if TYPE_CHECKING:
@@ -644,6 +648,7 @@ def csv_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn a DataFrame-producing callable into a CSV Artifact boundary.
 
@@ -668,6 +673,7 @@ def csv_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
     return cast(
         Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]],
@@ -734,6 +740,7 @@ def parquet_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn a DataFrame-producing callable into a Parquet Artifact boundary."""
 
@@ -748,6 +755,7 @@ def parquet_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
     return cast(
         Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]],
@@ -1592,6 +1600,7 @@ def json_artifact(
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
     serialization: Literal["json", "pandas-table"] = "json",
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn a JSON-compatible callable result into a durable JSON Artifact.
 
@@ -1611,6 +1620,7 @@ def json_artifact(
             serialization=serialization,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
     return cast(
         Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]],
@@ -1629,6 +1639,7 @@ def json_lines_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn table or record-producing code into a JSON Lines Artifact boundary."""
 
@@ -1644,6 +1655,7 @@ def json_lines_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
 
 
@@ -1657,6 +1669,7 @@ def arrow_ipc_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn a PyArrow table or pandas DataFrame into an Arrow IPC Artifact."""
 
@@ -1671,6 +1684,7 @@ def arrow_ipc_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
 
 
@@ -1682,6 +1696,7 @@ def npy_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn an ndarray-producing callable into a safe ``.npy`` Artifact."""
 
@@ -1694,6 +1709,7 @@ def npy_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
 
 
@@ -1706,6 +1722,7 @@ def npz_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn named-array code into a deterministic ``.npz`` Artifact boundary."""
 
@@ -1719,6 +1736,7 @@ def npz_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
 
 
@@ -1733,6 +1751,7 @@ def yaml_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn a mapping-producing callable into a safe YAML Artifact boundary."""
 
@@ -1748,6 +1767,7 @@ def yaml_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
 
 
@@ -1760,6 +1780,7 @@ def toml_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn a mapping-producing callable into a TOML Artifact boundary."""
 
@@ -1773,6 +1794,7 @@ def toml_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
 
 
@@ -1784,6 +1806,7 @@ def xml_artifact(
     profiles: ProfileBindings | None = None,
     annotations: dict[str, JsonValue] | None = None,
     schema_uri: str | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Turn an XML-text-producing callable into a safe XML Artifact boundary.
 
@@ -1800,6 +1823,7 @@ def xml_artifact(
             schema_uri=schema_uri,
         ),
         description_from_docstring=description_from_docstring,
+        adapters=adapters,
     )
 
 
@@ -1807,6 +1831,7 @@ def _artifact_decorator_for(
     artifact: ArtifactType,
     *,
     description_from_docstring: bool = False,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     """Return a precisely typed wrapper around the common decorator machinery."""
 
@@ -1815,6 +1840,7 @@ def _artifact_decorator_for(
         _decorate_artifact(
             artifact,
             description_from_docstring=description_from_docstring,
+            adapters=adapters,
         ),
     )
 
@@ -1833,6 +1859,7 @@ def _decorate_artifact(
     artifact: ArtifactType,
     *,
     description_from_docstring: bool = False,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[Callable[Parameters, object]], Callable[Parameters, ArtifactHandle]]:
     def decorate(
         function: Callable[Parameters, object],
@@ -1878,7 +1905,11 @@ def _decorate_artifact(
             )
 
         setattr(observed, _ARTIFACT_TYPE_ATTRIBUTE, resolved_artifact)
-        return observed
+        return apply_declaration_adapters(
+            observed,
+            adapters=adapters,
+            kind="artifact",
+        )
 
     return decorate
 

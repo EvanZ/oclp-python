@@ -1,4 +1,4 @@
-# Records and canonicalization
+# Canonical records and validation
 
 The SDK exposes immutable Pydantic models for the six OCLP core record kinds:
 
@@ -20,7 +20,7 @@ the description is universal human-facing explanation, while annotations carry
 application-defined JSON semantics. A supplied description participates in
 canonical record bytes, so changing it requires a fresh UUID record.
 
-## Core API
+## Parsing and validation API
 
 ```python
 from oclp import (

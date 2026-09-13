@@ -1,20 +1,30 @@
-# Bike-demand reference project
+# Bike-demand tutorial
 
-The SDK repository includes a self-contained consumer project at
+This tutorial follows a self-contained consumer project at
 [`examples/bike-demand-service`](https://github.com/EvanZ/oclp-python/tree/main/examples/bike-demand-service).
 It dogfoods OCLP on a public UCI Bike Sharing dataset. MLflow remains an
 optional SDK extra (`oclp[mlflow]`), rather than a core dependency.
 
-It is a reference project, not an SDK feature or a prescribed architecture.
-The application owns its computation boundaries, storage, ML workflow, and
-contracts. OCLP makes its durable observations interoperable.
+This page covers the ordinary, non-Dagster implementation in `data.py`,
+`modeling.py`, and `runner.py`: one explicit OCLP `@run` coordinates the
+pipeline. The same project also has a separate Dagster asset implementation in
+the `dagster/` package (loaded through `dagster_defs.py`); the [Dagster integration](dagster.md#the-bike-demand-dagster-implementation)
+uses it to explain the integration-specific decorator stack and runtime
+boundary.
+
+You will trace one application from source acquisition through feature
+preparation, temporal-fold training, Evidence gates, a model-release
+ArtifactSet, and release-backed inference. It is an example architecture, not
+an SDK feature or prescribed design: the application owns its computation
+boundaries, storage, ML workflow, and contracts; OCLP makes its durable
+observations interoperable.
 
 ## Project layout
 
 | Area | Responsibility | OCLP role |
 | --- | --- | --- |
-| `data.py` | Downloads the UCI source and prepares leakage-safe temporal features. | Declares a CSV Artifact acquisition and the feature-preparation Computation. |
-| `modeling.py` | Declares the training-plan Artifact, trains CatBoost folds and final model, evaluates, and scores holdout data. | Declares reusable model boundaries. |
+| `data.py` | Downloads the UCI source and prepares leakage-safe temporal features. | Declares the non-Dagster CSV Artifact acquisition and feature-preparation Computation. |
+| `modeling.py` | Declares the training-plan Artifact, trains CatBoost folds and final model, evaluates, and scores holdout data. | Declares non-Dagster model boundaries. |
 | `environment.py` | Resolves local OCLP, MLflow, and payload directories. | Local-only execution environment; not a durable run input. |
 | `runner.py` | Declares and coordinates one model-training run. | Uses SDK `@run` / `observe_run(...)`, passes persisted outputs into training, declares the final cross-computation ArtifactSet, and configures the optional SDK MLflow adapter. |
 | `oclp.publishing` | Writes immutable payload bytes, hashes them, and persists canonical records. | Generic local persistence; no bike-specific policy. |
@@ -140,7 +150,7 @@ def prepare_features(
     ...
 ```
 
-This static-declaration pattern is used by
+This static-declaration pattern is used by the ordinary runner's
 [`data.py`](https://github.com/EvanZ/oclp-python/blob/main/examples/bike-demand-service/src/bike_demand_service/data.py),
 [`modeling.py`](https://github.com/EvanZ/oclp-python/blob/main/examples/bike-demand-service/src/bike_demand_service/modeling.py),
 and `runner.py`. It avoids the drift-prone alternative of maintaining a

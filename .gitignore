@@ -1,6 +1,7 @@
 .venv/
 .pytest_cache/
 .ruff_cache/
+.tmp_dagster_home_*/
 .cache/
 __pycache__/
 *.py[cod]

@@ -90,6 +90,21 @@ def create_training_plan(
     the configuration a durable input that feature preparation consumes.
     """
 
+    return training_plan_document(
+        materialization_id=materialization_id,
+        fold_count=fold_count,
+    )
+
+
+def training_plan_document(
+    *,
+    materialization_id: str,
+    fold_count: int,
+) -> dict[str, object]:
+    """Build the portable training-plan payload without materializing it."""
+
+    if fold_count <= 0:
+        raise ValueError("fold_count must be positive")
     return {
         "materialization_id": materialization_id,
         "dataset": "UCI Bike Sharing Dataset (hourly)",
@@ -117,7 +132,7 @@ def create_release_cycle(
     ``release_id``; this Artifact merely records how that release was built.
     """
 
-    return _release_cycle_document(
+    return release_cycle_document(
         release_cycle_id=release_cycle_id,
         mlflow_parent_run_id=mlflow_parent_run_id,
         fold_count=fold_count,
@@ -143,7 +158,7 @@ def request_release_cycle(
     partitioned preparation run without asking a user to seed Dagster state.
     """
 
-    return _release_cycle_document(
+    return release_cycle_document(
         release_cycle_id=release_cycle_id,
         mlflow_parent_run_id=mlflow_parent_run_id,
         fold_count=fold_count,
@@ -151,7 +166,7 @@ def request_release_cycle(
     )
 
 
-def _release_cycle_document(
+def release_cycle_document(
     *,
     release_cycle_id: str,
     mlflow_parent_run_id: str,
@@ -174,6 +189,46 @@ def _release_cycle_document(
         "mlflow_parent_run_id": mlflow_parent_run_id,
         "fold_count": fold_count,
         "temporal_validation_rmse_max": temporal_validation_rmse_max,
+    }
+
+
+def train_fold_value(
+    feature_table: pd.DataFrame,
+    fold_definition: dict[str, object],
+    *,
+    fold_number: int,
+) -> dict[str, object]:
+    """Fit one materialized-data temporal fold and score its next window."""
+
+    fold = _fold_for_number(fold_definition, fold_number)
+    training = training_rows(feature_table)
+    train_end = pd.Timestamp(str(fold["train_end"]))
+    validation_start = pd.Timestamp(str(fold["validation_start"]))
+    validation_end = pd.Timestamp(str(fold["validation_end"]))
+    fit_rows = training.loc[training[TIMESTAMP_COLUMN] <= train_end]
+    validation = training.loc[
+        (training[TIMESTAMP_COLUMN] >= validation_start)
+        & (training[TIMESTAMP_COLUMN] <= validation_end)
+    ]
+    model = _new_model()
+    model.fit(
+        model_features(fit_rows),
+        fit_rows[TARGET_COLUMN],
+        cat_features=list(CATEGORICAL_FEATURES),
+    )
+    prediction = model.predict(model_features(validation))
+    predictions = pd.DataFrame(
+        {
+            TIMESTAMP_COLUMN: validation[TIMESTAMP_COLUMN].to_numpy(),
+            "actual": validation[TARGET_COLUMN].to_numpy(),
+            "prediction": prediction,
+            "fold": int(fold["fold"]),
+        }
+    )
+    return {
+        "model": model,
+        "validation_predictions": predictions,
+        "metrics": _metrics(predictions),
     }
 
 
@@ -219,36 +274,11 @@ def train_fold(
 ) -> dict[str, object]:
     """Fit one materialized-data temporal fold and score its next window."""
 
-    fold = _fold_for_number(fold_definition, fold_number)
-    training = training_rows(feature_table)
-    train_end = pd.Timestamp(str(fold["train_end"]))
-    validation_start = pd.Timestamp(str(fold["validation_start"]))
-    validation_end = pd.Timestamp(str(fold["validation_end"]))
-    fit_rows = training.loc[training[TIMESTAMP_COLUMN] <= train_end]
-    validation = training.loc[
-        (training[TIMESTAMP_COLUMN] >= validation_start)
-        & (training[TIMESTAMP_COLUMN] <= validation_end)
-    ]
-    model = _new_model()
-    model.fit(
-        model_features(fit_rows),
-        fit_rows[TARGET_COLUMN],
-        cat_features=list(CATEGORICAL_FEATURES),
+    return train_fold_value(
+        feature_table,
+        fold_definition,
+        fold_number=fold_number,
     )
-    prediction = model.predict(model_features(validation))
-    predictions = pd.DataFrame(
-        {
-            TIMESTAMP_COLUMN: validation[TIMESTAMP_COLUMN].to_numpy(),
-            "actual": validation[TARGET_COLUMN].to_numpy(),
-            "prediction": prediction,
-            "fold": int(fold["fold"]),
-        }
-    )
-    return {
-        "model": model,
-        "validation_predictions": predictions,
-        "metrics": _metrics(predictions),
-    }
 
 
 def _fold_for_number(
@@ -276,6 +306,26 @@ def _fold_for_number(
             "validation_end": str(raw_fold["validation_end"]),
         }
     raise ValueError(f"fold definition does not contain fold {fold_number}")
+
+
+def evaluate_folds_value(
+    fold_predictions: tuple[pd.DataFrame, ...],
+    *,
+    temporal_validation_rmse_max: float = 250,
+) -> dict[str, object]:
+    """Aggregate exactly the validation results used for candidate selection."""
+
+    if not fold_predictions:
+        raise ValueError("at least one fold prediction Artifact is required")
+    evaluation = _metrics(pd.concat(fold_predictions))
+    evaluation["fold_count"] = len(fold_predictions)
+    # Persist the gate's concrete threshold with the metrics it evaluates.  The
+    # Execution parameters capture the same value for the invocation record.
+    evaluation["temporal_validation_rmse_max"] = temporal_validation_rmse_max
+    return {
+        "evaluation": evaluation,
+        "training_config": _training_config(),
+    }
 
 
 @artifact_set(
@@ -314,17 +364,32 @@ def evaluate_folds(
 ) -> dict[str, object]:
     """Aggregate exactly the validation results used for candidate selection."""
 
-    if not fold_predictions:
-        raise ValueError("at least one fold prediction Artifact is required")
-    evaluation = _metrics(pd.concat(fold_predictions))
-    evaluation["fold_count"] = len(fold_predictions)
-    # Persist the gate's concrete threshold with the metrics it evaluates.  The
-    # Execution parameters capture the same value for the invocation record.
-    evaluation["temporal_validation_rmse_max"] = temporal_validation_rmse_max
-    return {
-        "evaluation": evaluation,
-        "training_config": _training_config(),
-    }
+    return evaluate_folds_value(
+        fold_predictions,
+        temporal_validation_rmse_max=temporal_validation_rmse_max,
+    )
+
+
+def train_final_model_value(
+    feature_table: pd.DataFrame,
+    training_config: dict[str, object],
+    *,
+    training_window: Literal["all-pre-holdout-rows"] = "all-pre-holdout-rows",
+) -> CatBoostRegressor:
+    """Fit the release candidate from materialized data and configuration."""
+
+    if training_window != "all-pre-holdout-rows":  # pragma: no cover - type guard.
+        raise ValueError(f"unsupported bike-demand training window: {training_window}")
+    fitting_rows = training_rows(feature_table)
+    model = _new_model(
+        training_config=training_config,
+    )
+    model.fit(
+        model_features(fitting_rows),
+        fitting_rows[TARGET_COLUMN],
+        cat_features=list(CATEGORICAL_FEATURES),
+    )
+    return model
 
 
 @artifact_set(
@@ -356,18 +421,30 @@ def train_final_model(
 ) -> CatBoostRegressor:
     """Fit the release candidate from materialized data and configuration."""
 
-    if training_window != "all-pre-holdout-rows":  # pragma: no cover - type guard.
-        raise ValueError(f"unsupported bike-demand training window: {training_window}")
-    fitting_rows = training_rows(feature_table)
-    model = _new_model(
-        training_config=training_config,
+    return train_final_model_value(
+        feature_table,
+        training_config,
+        training_window=training_window,
     )
-    model.fit(
-        model_features(fitting_rows),
-        fitting_rows[TARGET_COLUMN],
-        cat_features=list(CATEGORICAL_FEATURES),
+
+
+def score_holdout_value(
+    model: CatBoostRegressor, feature_table: pd.DataFrame
+) -> dict[str, object]:
+    """Score the final, unobserved temporal holdout for the offline demo."""
+
+    holdout = holdout_rows(feature_table)
+    if holdout.empty:
+        raise ValueError("the prepared data has no post-cutoff holdout rows")
+    prediction = model.predict(model_features(holdout))
+    predictions = pd.DataFrame(
+        {
+            TIMESTAMP_COLUMN: holdout[TIMESTAMP_COLUMN].to_numpy(),
+            "actual": holdout[TARGET_COLUMN].to_numpy(),
+            "prediction": prediction,
+        }
     )
-    return model
+    return {"predictions": predictions, "metrics": _metrics(predictions)}
 
 
 @mlflow(metrics=(MlflowMetrics(output_port="metrics", prefix="holdout"),))
@@ -397,41 +474,13 @@ def score_holdout(
 ) -> dict[str, object]:
     """Score the final, unobserved temporal holdout for the offline demo."""
 
-    holdout = holdout_rows(feature_table)
-    if holdout.empty:
-        raise ValueError("the prepared data has no post-cutoff holdout rows")
-    prediction = model.predict(model_features(holdout))
-    predictions = pd.DataFrame(
-        {
-            TIMESTAMP_COLUMN: holdout[TIMESTAMP_COLUMN].to_numpy(),
-            "actual": holdout[TARGET_COLUMN].to_numpy(),
-            "prediction": prediction,
-        }
-    )
-    return {"predictions": predictions, "metrics": _metrics(predictions)}
+    return score_holdout_value(model, feature_table)
 
 
-@mlflow(payloads=("chart",))
-@computation(
-    name="Chart temporal validation quality",
-    description_from_docstring=True,
-    inputs={"fold_predictions": many(CsvArtifact)},
-    outputs={
-        "chart": BytesArtifact(
-            name="Temporal validation quality chart",
-            description=(
-                "Per-fold validation RMSE compared with the configured quality "
-                "threshold."
-            ),
-            media_type="image/png",
-            suffix="png",
-        )
-    },
-)
-def chart_temporal_validation_quality(
+def chart_temporal_validation_quality_value(
     fold_predictions: tuple[pd.DataFrame, ...],
     *,
-    temporal_validation_rmse_max: float,
+    temporal_validation_rmse_max: float = 250,
 ) -> dict[str, bytes]:
     """Render the temporal-fold RMSE gate as a deterministic PNG Artifact."""
 
@@ -467,22 +516,35 @@ def chart_temporal_validation_quality(
 
 @mlflow(payloads=("chart",))
 @computation(
-    name="Chart holdout demand forecast",
+    name="Chart temporal validation quality",
     description_from_docstring=True,
-    inputs={"predictions": CsvArtifact},
+    inputs={"fold_predictions": many(CsvArtifact)},
     outputs={
         "chart": BytesArtifact(
-            name="Holdout demand forecast chart",
+            name="Temporal validation quality chart",
             description=(
-                "Observed and predicted hourly demand across the untouched "
-                "holdout window."
+                "Per-fold validation RMSE compared with the configured quality "
+                "threshold."
             ),
             media_type="image/png",
             suffix="png",
         )
     },
 )
-def chart_holdout_demand_forecast(
+def chart_temporal_validation_quality(
+    fold_predictions: tuple[pd.DataFrame, ...],
+    *,
+    temporal_validation_rmse_max: float = 250,
+) -> dict[str, bytes]:
+    """Render the temporal-fold RMSE gate as a deterministic PNG Artifact."""
+
+    return chart_temporal_validation_quality_value(
+        fold_predictions,
+        temporal_validation_rmse_max=temporal_validation_rmse_max,
+    )
+
+
+def chart_holdout_demand_forecast_value(
     predictions: pd.DataFrame,
 ) -> dict[str, bytes]:
     """Render observed versus predicted holdout demand as a PNG Artifact."""
@@ -508,6 +570,31 @@ def chart_holdout_demand_forecast(
     axis.legend(frameon=False, loc="best")
     figure.autofmt_xdate(rotation=25, ha="right")
     return {"chart": _png_bytes(figure)}
+
+
+@mlflow(payloads=("chart",))
+@computation(
+    name="Chart holdout demand forecast",
+    description_from_docstring=True,
+    inputs={"predictions": CsvArtifact},
+    outputs={
+        "chart": BytesArtifact(
+            name="Holdout demand forecast chart",
+            description=(
+                "Observed and predicted hourly demand across the untouched "
+                "holdout window."
+            ),
+            media_type="image/png",
+            suffix="png",
+        )
+    },
+)
+def chart_holdout_demand_forecast(
+    predictions: pd.DataFrame,
+) -> dict[str, bytes]:
+    """Render observed versus predicted holdout demand as a PNG Artifact."""
+
+    return chart_holdout_demand_forecast_value(predictions)
 
 
 def _png_bytes(figure: Figure) -> bytes:

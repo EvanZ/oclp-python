@@ -7,18 +7,31 @@ docs_dir = "docs"
 site_dir = "site"
 nav = [
   {"Overview" = "index.md"},
-  {"Getting started" = "getting-started.md"},
-  {"Using the SDK" = [
-    {"Instrument a computation" = "instrumenting-computations.md"},
-    {"Observe a run" = "runs.md"},
-    {"Artifact formats and integrations" = "integrations.md"},
-    {"API reference" = "api-reference.md"},
-    {"End-to-end ML example" = "bike-demand-example.md"},
-    {"Records and canonicalization" = "records.md"},
-    {"DuckDB catalog" = "catalog.md"},
+  {"How to Use" = "getting-started.md"},
+  {"Tutorials" = [
+    {"Bike-demand tutorial" = "bike-demand-example.md"},
+  ]},
+  {"Core API" = [
+    {"API Overview" = "api-reference.md"},
+    {"Artifacts" = "artifacts.md"},
+    {"Computations and Executions" = "computations-and-executions.md"},
+    {"Evidence" = "evidence.md"},
+    {"Artifact sets" = "artifact-sets.md"},
+    {"Runs" = "runs.md"},
+    {"Sources and publishing" = "sources-and-publishing.md"},
+  ]},
+  {"Reference" = [
+    {"Canonical records and validation" = "canonical-records.md"},
     {"Conformance" = "conformance.md"},
   ]},
-  {"Roadmap" = "roadmap.md"},
+  {"Integrations" = [
+    {"Dagster" = "dagster.md"},
+    {"MLflow" = "mlflow.md"},
+    {"DuckDB catalog" = "catalog.md"},
+  ]},
+  {"Project" = [
+    {"Roadmap" = "roadmap.md"},
+  ]},
 ]
 
 [project.theme]

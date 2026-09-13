@@ -28,7 +28,7 @@ from oclp.models import Execution, PortDefinition
 from oclp.publishing import LocalArtifactPublisher
 
 import bike_demand_service.data as data_module
-from bike_demand_service.dagster_defs import _release_cycle_id_for_start
+from bike_demand_service.dagster.lifecycle import release_cycle_id_for_start
 from bike_demand_service.data import (
     FEATURE_COLUMNS,
     TARGET_COLUMN,
@@ -77,7 +77,7 @@ def test_dagster_start_run_uuid_is_the_release_lifecycle_id() -> None:
     run_id = str(uuid4())
     context = SimpleNamespace(run=SimpleNamespace(run_id=run_id))
 
-    assert _release_cycle_id_for_start(context) == run_id
+    assert release_cycle_id_for_start(context) == run_id
 
 
 @computation(

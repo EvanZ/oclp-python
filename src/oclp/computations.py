@@ -21,7 +21,11 @@ from typing import (
 from pydantic import Field, JsonValue, model_validator
 
 from oclp._descriptions import resolve_callable_description
-from oclp.artifacts import ArtifactType
+from oclp.artifacts import ArtifactHandle, ArtifactType
+from oclp.declaration_adapters import (
+    DeclarationAdapter,
+    apply_declaration_adapters,
+)
 from oclp.evidence import evidence_implementation
 from oclp.models import (
     Computation,
@@ -38,6 +42,7 @@ CallableT = TypeVar("CallableT", bound=Callable[..., object])
 _COMPUTATION_TEMPLATE_ATTRIBUTE = "__oclp_computation_template__"
 _COMPUTATION_INPUT_ARTIFACTS_ATTRIBUTE = "__oclp_input_artifact_types__"
 _ARTIFACT_SET_DECLARATIONS_ATTRIBUTE = "__oclp_artifact_set_declarations__"
+_ARTIFACT_SET_ASSEMBLY_NAME_ATTRIBUTE = "__oclp_artifact_set_assembly_name__"
 
 
 @dataclass(frozen=True)
@@ -157,6 +162,107 @@ def artifact_set(
         return function
 
     return decorate
+
+
+def assemble_artifact_set(
+    *,
+    name: str,
+    members: Mapping[str, tuple[str, str | None]],
+    adapters: tuple[DeclarationAdapter, ...] = (),
+) -> Callable[[CallableT], CallableT]:
+    """Declare a standalone ArtifactSet assembly from exact input handles.
+
+    Unlike :func:`artifact_set`, which contributes outputs from one decorated
+    Computation to a run-local collection, this decorator is a direct OCLP
+    ArtifactSet boundary. It is intended for visible terminal orchestration
+    nodes that assemble immutable upstream Artifacts without creating a
+    synthetic Computation or Execution.
+    """
+
+    if not isinstance(name, str) or not name:
+        raise ValueError("ArtifactSet names must be non-empty strings")
+    if not isinstance(members, Mapping) or not members:
+        raise TypeError("ArtifactSet assembly members must be a non-empty mapping")
+    normalized = {
+        member_name: _artifact_set_member(declaration)
+        for member_name, declaration in members.items()
+    }
+    if any(
+        not isinstance(member_name, str) or not member_name
+        for member_name in normalized
+    ):
+        raise ValueError("ArtifactSet assembly member names must be non-empty strings")
+    if not isinstance(adapters, tuple):
+        raise TypeError("ArtifactSet assembly adapters must be a tuple")
+
+    def decorate(function: CallableT) -> CallableT:
+        if not callable(function):
+            raise TypeError("@assemble_artifact_set can only decorate a callable")
+        signature = inspect.signature(function)
+        missing = sorted(
+            input_name
+            for input_name, _role in normalized.values()
+            if input_name not in signature.parameters
+        )
+        if missing:
+            raise ValueError(
+                "ArtifactSet assembly members must name callable parameters; missing: "
+                + ", ".join(missing)
+            )
+
+        @wraps(function)
+        def observed(*args: object, **kwargs: object) -> object:
+            from oclp.runtime import active_run
+
+            run = active_run()
+            if run is None:
+                raise RuntimeError(
+                    "ArtifactSet assembly decorators require an active OclpRun"
+                )
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            function(*args, **kwargs)
+            invalid = sorted(
+                input_name
+                for input_name, _role in normalized.values()
+                if not isinstance(bound.arguments[input_name], ArtifactHandle)
+            )
+            if invalid:
+                raise TypeError(
+                    "ArtifactSet assembly inputs must be ArtifactHandle values; "
+                    "invalid: "
+                    + ", ".join(invalid)
+                )
+            return run.publish_artifact_set(
+                name=name,
+                members={
+                    member_name: (bound.arguments[input_name], role)
+                    for member_name, (input_name, role) in normalized.items()
+                },
+                materialize_manifest=True,
+                manifest_name=name,
+            )
+
+        setattr(observed, _ARTIFACT_SET_ASSEMBLY_NAME_ATTRIBUTE, name)
+        return apply_declaration_adapters(
+            cast(CallableT, observed),
+            adapters=adapters,
+            kind="artifact_set",
+        )
+
+    return decorate
+
+
+def artifact_set_assembly_name(function: Callable[..., object]) -> str:
+    """Return the declared name of a standalone ArtifactSet assembly."""
+
+    name = getattr(function, _ARTIFACT_SET_ASSEMBLY_NAME_ATTRIBUTE, None)
+    if not isinstance(name, str) or not name:
+        callable_name = getattr(function, "__qualname__", repr(function))
+        raise ValueError(
+            f"callable {callable_name!r} has no standalone ArtifactSet declaration"
+        )
+    return name
 
 
 def _artifact_set_member(value: object) -> tuple[str, str | None]:
@@ -359,6 +465,7 @@ def computation(
     requires: tuple[Callable[..., object], ...] | None = None,
     profiles: dict[str, dict[str, JsonValue]] | None = None,
     annotations: dict[str, JsonValue] | None = None,
+    adapters: tuple[DeclarationAdapter, ...] = (),
 ) -> Callable[[CallableT], CallableT]:
     """Declare a callable's Computation contract and optional persisted outputs.
 
@@ -386,7 +493,15 @@ def computation(
     Each output uses an explicit concrete :class:`ArtifactType`, so persistence
     and its durable representation are never inferred merely from a Python
     return type.
+
+    ``adapters`` optionally binds this canonical declaration to a host runtime
+    without creating a second OCLP semantic decorator. For example, the
+    optional Dagster adapter opens an OCLP run when the native Dagster asset
+    invokes this callable. The adapter itself never declares a Computation.
     """
+
+    if not isinstance(adapters, tuple):
+        raise TypeError("computation adapters must be a tuple")
 
     if input_ports and inputs is not None:
         raise ValueError("declare either input_ports or inputs, not both")
@@ -489,7 +604,11 @@ def computation(
         # ``@computation`` can attach SDK declaration metadata to both callable
         # layers and OclpRun can retrieve it during invocation.
         setattr(observed, "__oclp_observed_function__", function)
-        return cast(CallableT, observed)
+        return apply_declaration_adapters(
+            cast(CallableT, observed),
+            adapters=adapters,
+            kind="computation",
+        )
 
     return decorate
 
