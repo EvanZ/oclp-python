@@ -167,7 +167,7 @@ def _release_cycle_parent_run_id(release_cycle_id: str) -> str:
     environment.prepare()
     return create_mlflow_parent_run(
         experiment_name=MLFLOW_EXPERIMENT_NAME,
-        run_name=f"bike-demand release cycle {release_cycle_id}",
+        run_name=f"bike-demand release cycle {release_cycle_id[:8]}",
         tracking_uri=_mlflow_tracking_uri(environment),
         artifact_location=(environment.mlflow_root / "artifacts").resolve().as_uri(),
         identity_tags={
