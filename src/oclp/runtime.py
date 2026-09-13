@@ -60,6 +60,7 @@ from oclp.models import (
     RecordReference,
     new_record_id,
 )
+from oclp.profiles.lifecycle import LifecycleInput, coerce_lifecycle
 from oclp.profiles.release_manifest import (
     RELEASE_MANIFEST_PROFILE,
     RELEASE_MANIFEST_PROFILE_VERSION,
@@ -253,6 +254,7 @@ def observe_run(
     parent_execution: RecordReference | None = None,
     profiles: ProfileBindings | None = None,
     record_profiles: ProfileBindings | None = None,
+    lifecycle: LifecycleInput | None = None,
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS,
     adapters: tuple[RunAdapter, ...] | None = None,
     finalize_decorated_artifact_sets: bool = True,
@@ -299,6 +301,7 @@ def observe_run(
         parent_execution=parent_execution,
         profiles=merged_profiles,
         record_profiles=record_profiles,
+        lifecycle=lifecycle,
         artifact_adapters=artifact_adapters,
         adapters=active_adapters,
         run_name=generated["run_name"],
@@ -405,6 +408,7 @@ class OclpRun:
     parent_execution: RecordReference | None = None
     profiles: ProfileBindings | None = None
     record_profiles: ProfileBindings | None = None
+    lifecycle: LifecycleInput | None = None
     artifact_adapters: ArtifactAdapterRegistry = DEFAULT_ARTIFACT_ADAPTERS
     adapters: tuple[RunAdapter, ...] = ()
     run_name: str | None = None
@@ -446,6 +450,20 @@ class OclpRun:
     _last_execution: RecordReference | None = field(
         default=None, init=False, repr=False
     )
+
+    def __post_init__(self) -> None:
+        """Attach one explicit lifecycle to executions and durable outputs."""
+
+        if self.lifecycle is None:
+            return
+        lifecycle = coerce_lifecycle(self.lifecycle)
+        bindings = lifecycle.profile_bindings()
+        self.profiles = _merge_profile_bindings(self.profiles, bindings)
+        self.record_profiles = _merge_profile_bindings(
+            self.record_profiles,
+            bindings,
+        )
+        self.lifecycle = lifecycle
 
     def __enter__(self) -> OclpRun:
         self._token = _ACTIVE_RUN.set(self)

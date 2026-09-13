@@ -7,7 +7,15 @@ from uuid import UUID
 
 import pytest
 
-from oclp import JsonArtifact, OpaqueSource, computation, json_artifact, many, run
+from oclp import (
+    JsonArtifact,
+    OpaqueSource,
+    computation,
+    json_artifact,
+    many,
+    new_lifecycle,
+    run,
+)
 from oclp.dagster import (
     DAGSTER_PROFILE,
     dagster_run_context,
@@ -367,6 +375,7 @@ def test_declarative_proxy_uses_an_imported_computation_without_a_duplicate(tmp_
 def test_dg_computation_projects_atomic_multi_outputs_and_ordered_fan_in(tmp_path):
     publisher, records = _publisher_for(tmp_path)
     source = OpaqueSource(reason="Dagster multi-asset projection test source")
+    lifecycle = new_lifecycle()
 
     split = dg_computation(
         workflow=projection_workflow,
@@ -376,6 +385,7 @@ def test_dg_computation_projects_atomic_multi_outputs_and_ordered_fan_in(tmp_pat
             "left": dg.AssetOut(key="left_number"),
             "right": dg.AssetOut(key="right_number"),
         },
+        lifecycle=lifecycle,
     )(split_source_value)
 
     total = dg_computation(
@@ -389,6 +399,7 @@ def test_dg_computation_projects_atomic_multi_outputs_and_ordered_fan_in(tmp_pat
                 dg.AssetIn(key=dg.AssetKey("right_number")),
             ),
         },
+        lifecycle=lambda _context: lifecycle,
     )(sum_split_source_values)
 
     @dg_artifact_set(
@@ -411,6 +422,7 @@ def test_dg_computation_projects_atomic_multi_outputs_and_ordered_fan_in(tmp_pat
                 "release_cycle_id": "cycle-123",
             }
         },
+        lifecycle=lifecycle,
     )
     def release() -> None:
         """Assemble the visible release collection from selected assets."""
@@ -436,21 +448,41 @@ def test_dg_computation_projects_atomic_multi_outputs_and_ordered_fan_in(tmp_pat
         if execution.profiles[DAGSTER_PROFILE]["asset_key"] == "total_number"
     )
     assert len(total_execution.inputs["values"]) == 2
+    assert (
+        total_execution.profiles["lifecycle"]
+        == lifecycle.profile_bindings()["lifecycle"]
+    )
     artifact_sets = [record for record in records if isinstance(record, ArtifactSet)]
     assert [artifact_set.name for artifact_set in artifact_sets] == [
         "Projected number release"
     ]
     assert artifact_sets[0].profiles == {
-        "example_release": {"version": "1", "release_cycle_id": "cycle-123"}
+        "example_release": {"version": "1", "release_cycle_id": "cycle-123"},
+        "lifecycle": lifecycle.profile_bindings()["lifecycle"],
     }
     manifests = [
         record
         for record in records
-        if isinstance(record, Artifact)
-        and record.name == "Projected number release"
+        if isinstance(record, Artifact) and record.name == "Projected number release"
     ]
     assert manifests[0].profiles is not None
     assert manifests[0].profiles["example_release"]["release_cycle_id"] == "cycle-123"
+    assert (
+        manifests[0].profiles["lifecycle"] == lifecycle.profile_bindings()["lifecycle"]
+    )
+    output_artifacts = [
+        record
+        for record in records
+        if isinstance(record, Artifact)
+        and record.name
+        in {"Left source value", "Right source value", "Total source value"}
+    ]
+    assert output_artifacts
+    assert all(
+        artifact.profiles is not None
+        and artifact.profiles["lifecycle"] == lifecycle.profile_bindings()["lifecycle"]
+        for artifact in output_artifacts
+    )
 
 
 def test_oclp_artifact_io_manager_rehydrates_a_partitioned_handle_in_a_later_run(

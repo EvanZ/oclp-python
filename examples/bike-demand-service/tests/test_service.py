@@ -19,6 +19,7 @@ from oclp import (
     GitSource,
     JsonArtifact,
     OclpRun,
+    new_lifecycle,
 )
 from oclp.catalog.duckdb import DuckdbCatalog
 from oclp.models import RecordReference
@@ -42,6 +43,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     environment.prepare()
     payload = _prediction_payload()
     model = _fitted_model(payload)
+    lifecycle = new_lifecycle()
     with LocalArtifactPublisher(
         catalog_path=environment.catalog_path,
         record_root=environment.oclp_root,
@@ -61,6 +63,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
                 repository="https://github.com/example/oclp-python.git",
                 commit="a" * 40,
             ),
+            lifecycle=lifecycle,
         ) as observed:
             feature_contract = JsonArtifact().handle(
                 publisher.json_artifact(
@@ -90,6 +93,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
 
     assert health.status_code == 200
     assert health.json()["model_release_id"] == release.artifact_set.id
+    assert health.json()["lifecycle_id"] == str(lifecycle.lifecycle_id)
     assert response.status_code == 200
     body = response.json()
     assert body["model_release_id"] == release.artifact_set.id
@@ -110,6 +114,7 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     assert len(execution.inputs["prediction_request"]) == 1
     response_reference = execution.outputs["prediction_response"][0]
     assert response_reference.id == body["response_id"]
+    assert execution.profiles["lifecycle"] == lifecycle.profile_bindings()["lifecycle"]
 
     request_artifact = next(
         record
@@ -124,6 +129,11 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     )
     assert json.loads(_read_file_location(request_artifact)) == payload
     assert request_artifact.id == body["request_id"]
+    assert request_artifact.profiles is not None
+    assert (
+        request_artifact.profiles["lifecycle"]
+        == lifecycle.profile_bindings()["lifecycle"]
+    )
     assert json.loads(_read_file_location(response_artifact)) == {
         "model_release_id": body["model_release_id"],
         "prediction": body["prediction"],
@@ -132,6 +142,11 @@ def test_predict_uses_exact_manifest_model_and_persists_request_response(
     }
     assert request_artifact.schema_uri is None
     assert response_artifact.schema_uri is None
+    assert response_artifact.profiles is not None
+    assert (
+        response_artifact.profiles["lifecycle"]
+        == lifecycle.profile_bindings()["lifecycle"]
+    )
     assert (
         request_artifact.description
         == "Persist the accepted HTTP payload as an external input Artifact."

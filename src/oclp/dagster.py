@@ -22,7 +22,7 @@ from typing import Any, Literal, ParamSpec, TypeAlias, TypeVar
 from urllib.parse import unquote, urlparse
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from oclp.artifacts import ArtifactHandle, artifact_type
 from oclp.computations import (
@@ -41,6 +41,7 @@ from oclp.models import (
     RecordReference,
     ServiceSource,
 )
+from oclp.profiles.lifecycle import Lifecycle, LifecycleInput, coerce_lifecycle
 from oclp.profiles.run import RUN_PROFILE
 from oclp.publishing import LocalArtifactPublisher, PublishedArtifact
 from oclp.runtime import ArtifactSetHandle, OclpRun, observe_run, run_template
@@ -56,6 +57,9 @@ ApplicationProfiles: TypeAlias = ProfileBindings | Callable[
     [DagsterContext], ProfileBindings
 ]
 RunName: TypeAlias = str | Callable[[DagsterContext], str]
+LifecycleDeclaration: TypeAlias = LifecycleInput | Callable[
+    [DagsterContext], LifecycleInput
+]
 
 _CONTEXT_FIELDS = frozenset(
     {"run_id", "asset_key", "step_key", "partition_key", "retry_number"}
@@ -145,6 +149,7 @@ def dagster_asset(
         "retry_number",
     ),
     strict: bool = False,
+    lifecycle: LifecycleDeclaration | None = None,
     context_parameter: str = "context",
 ) -> Callable[[Callable[Parameters, Result]], Callable[Parameters, Result]]:
     """Observe one Dagster asset through an existing OCLP ``@run`` workflow.
@@ -212,6 +217,11 @@ def dagster_asset(
                     publisher=local_publisher,
                     source=resolved_source,
                     adapters=(*template.adapters, adapter),
+                    lifecycle=_resolve_lifecycle(
+                        lifecycle,
+                        context=context,
+                        decorator="dagster_asset",
+                    ),
                 ):
                     return function(*args, **kwargs)
 
@@ -255,6 +265,7 @@ def dg_workflow(
         "retry_number",
     ),
     strict: bool = False,
+    lifecycle: LifecycleDeclaration | None = None,
     context_parameter: str = "context",
 ) -> Callable[[Callable[Parameters, Result]], object]:
     """Project an application-owned ``@run`` workflow as one Dagster asset.
@@ -276,6 +287,7 @@ def dg_workflow(
         source=source,
         context_fields=context_fields,
         strict=strict,
+        lifecycle=lifecycle,
         context_parameter=context_parameter,
     )
 
@@ -309,6 +321,7 @@ def dg_artifact(
     config_schema: object | None = None,
     deps: object | None = None,
     application_profiles: ApplicationProfiles | None = None,
+    lifecycle: LifecycleDeclaration | None = None,
     run_name: RunName | None = None,
     context_parameter: str = "context",
 ) -> Callable[[Callable[Parameters, ArtifactHandle]], object]:
@@ -366,6 +379,11 @@ def dg_artifact(
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
+                    lifecycle=_resolve_lifecycle(
+                        lifecycle,
+                        context=context,
+                        decorator="dg_artifact",
+                    ),
                 ) as observed:
                     if context_parameter in signature.parameters:
                         handle = function(context)
@@ -424,6 +442,7 @@ def dg_computation(
     config_schema: object | None = None,
     deps: object | None = None,
     application_profiles: ApplicationProfiles | None = None,
+    lifecycle: LifecycleDeclaration | None = None,
     run_name: RunName | None = None,
     context_parameter: str | None = None,
     target: Callable[..., object] | None = None,
@@ -546,6 +565,11 @@ def dg_computation(
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
+                    lifecycle=_resolve_lifecycle(
+                        lifecycle,
+                        context=context,
+                        decorator="dg_computation",
+                    ),
                     finalize_decorated_artifact_sets=False,
                 ) as observed:
                     if context_parameter is not None:
@@ -671,6 +695,7 @@ def dg_artifact_set(
     config_schema: object | None = None,
     deps: object | None = None,
     application_profiles: ApplicationProfiles | None = None,
+    lifecycle: LifecycleDeclaration | None = None,
     run_name: RunName | None = None,
 ) -> Callable[[Callable[Parameters, object]], object]:
     """Project an explicit OCLP ArtifactSet assembly as a Dagster asset.
@@ -736,6 +761,11 @@ def dg_artifact_set(
                     source=resolved_source,
                     profiles=_execution_profiles(step, record_profiles),
                     record_profiles=record_profiles,
+                    lifecycle=_resolve_lifecycle(
+                        lifecycle,
+                        context=context,
+                        decorator="dg_artifact_set",
+                    ),
                     finalize_decorated_artifact_sets=False,
                 ) as observed:
                     artifact_set = observed.publish_artifact_set(
@@ -934,6 +964,25 @@ def _resolve_run_name(
             f"{decorator} run_name must resolve to a non-empty string"
         )
     return resolved
+
+
+def _resolve_lifecycle(
+    declaration: LifecycleDeclaration | None,
+    *,
+    context: DagsterContext,
+    decorator: str,
+) -> Lifecycle | None:
+    """Resolve a portable lifecycle identity for one projected asset step."""
+
+    if declaration is None:
+        return None
+    resolved = declaration(context) if callable(declaration) else declaration
+    try:
+        return coerce_lifecycle(resolved)
+    except (TypeError, ValidationError) as error:
+        raise ValueError(
+            f"{decorator} lifecycle must resolve to a Lifecycle, UUID, or UUID string"
+        ) from error
 
 
 def _execution_profiles(

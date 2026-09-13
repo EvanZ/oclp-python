@@ -258,10 +258,31 @@ Computation does not.
 observation without claiming a batch run—for example, a request-scoped
 inference service that is represented through its service-level projection.
 
-“Lifecycle” is intentionally not used for the per-invocation profile. A
-future persistent lifecycle identifier may associate several UUID-identified
-runs, but it must be explicitly supplied by an application rather than created
-implicitly by the SDK.
+## Opt-in lifecycle identity
+
+`new_lifecycle()` creates an application-selected UUID that can group concrete
+Artifacts, ArtifactSets, and Executions across independently scheduled runs.
+It is never created implicitly. Pass the same value to later work—including
+request-scoped inference—to join it to an existing lifecycle:
+
+```python
+from oclp import OclpRun, lifecycle_from_profiles, new_lifecycle, observe_run
+
+lifecycle = new_lifecycle()
+with observe_run(train, publisher=publisher, source=source, lifecycle=lifecycle):
+    train(...)
+
+# A later service can recover the durable identity from the released collection.
+lifecycle = lifecycle_from_profiles(release.artifact_set.profiles)
+with OclpRun(publisher=publisher, source=service_source, lifecycle=lifecycle):
+    serve_request(...)
+```
+
+The resulting records carry the portable `profiles.lifecycle` binding. It is a
+grouping relationship only: matching IDs do not manufacture dataflow edges,
+ArtifactSet membership, Events, statuses, or scheduler behavior. The normative
+profile contract lives in
+[`oclp-profiles`](https://github.com/EvanZ/oclp-profiles/tree/main/spec/lifecycle.md).
 
 ## Dirty Git source
 

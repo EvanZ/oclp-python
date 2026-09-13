@@ -12,6 +12,7 @@ from oclp import (
     capture_git_source_overlay,
     load_release_manifest,
     mlflow,
+    new_lifecycle,
     observe_run,
     run,
     source_from_git_checkout,
@@ -28,6 +29,10 @@ from bike_demand_service.data import (
     prepare_features,
 )
 from bike_demand_service.environment import DemoEnvironment
+from bike_demand_service.mlflow_parent import (
+    MLFLOW_EXPERIMENT_NAME,
+    MLFLOW_PARENT_PROFILE,
+)
 from bike_demand_service.modeling import (
     chart_holdout_demand_forecast,
     chart_temporal_validation_quality,
@@ -36,10 +41,6 @@ from bike_demand_service.modeling import (
     score_holdout,
     train_final_model,
     train_fold,
-)
-from bike_demand_service.release_cycle import (
-    MLFLOW_EXPERIMENT_NAME,
-    RELEASE_CYCLE_PROFILE,
 )
 from bike_demand_service.service import (
     persist_prediction_request,
@@ -89,7 +90,7 @@ class _ReleaseSmokeTestResult:
 _BIKE_DEMAND_RUN_ADAPTERS = (
     MlflowAdapter(
         experiment_name=MLFLOW_EXPERIMENT_NAME,
-        parent_profile=RELEASE_CYCLE_PROFILE,
+        parent_profile=MLFLOW_PARENT_PROFILE,
     ),
 )
 
@@ -262,6 +263,7 @@ def run_demo(
     environment = environment or DemoEnvironment.default()
     environment.prepare()
     (environment.mlflow_root / "artifacts").mkdir(parents=True, exist_ok=True)
+    lifecycle = new_lifecycle()
 
     with LocalArtifactPublisher(
         catalog_path=environment.catalog_path,
@@ -284,6 +286,7 @@ def run_demo(
             run_bike_training,
             publisher=publisher,
             source=source,
+            lifecycle=lifecycle,
         ) as observed:
             assert observed.run_id is not None
             training_run_id = str(observed.run_id)
@@ -304,6 +307,7 @@ def run_demo(
             run_release_smoke_test,
             publisher=smoke_publisher,
             source=source,
+            lifecycle=lifecycle,
         ) as observed:
             assert observed.run_id is not None
             release_smoke_run_id = str(observed.run_id)

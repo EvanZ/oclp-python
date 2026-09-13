@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from oclp import JsonArtifact, OpaqueSource, computation, run
+from oclp import JsonArtifact, OpaqueSource, computation, new_lifecycle, run
 from oclp.dagster import dagster_asset, dg_workflow
+from oclp.models import Artifact, Execution
 from oclp.publishing import LocalArtifactPublisher
 
 dg = pytest.importorskip("dagster")
@@ -30,6 +31,7 @@ def build_report_workflow() -> dict[str, int]:
 
 def test_dagster_asset_observes_existing_oclp_workflow(tmp_path):
     records = tmp_path / "records"
+    lifecycle = new_lifecycle()
 
     def publisher_for(_context):
         return LocalArtifactPublisher(
@@ -43,6 +45,7 @@ def test_dagster_asset_observes_existing_oclp_workflow(tmp_path):
         workflow=build_report_workflow,
         publisher=publisher_for,
         source=OpaqueSource(reason="Dagster adapter test source"),
+        lifecycle=lifecycle,
     )
     def dagster_report(context: dg.AssetExecutionContext) -> dict[str, int]:
         return build_report_workflow()
@@ -63,10 +66,23 @@ def test_dagster_asset_observes_existing_oclp_workflow(tmp_path):
         observed_records = publisher.records()
     assert [record.kind for record in observed_records].count("computation") == 1
     assert [record.kind for record in observed_records].count("execution") == 1
+    binding = lifecycle.profile_bindings()["lifecycle"]
+    assert (
+        next(
+            record for record in observed_records if isinstance(record, Execution)
+        ).profiles["lifecycle"]
+        == binding
+    )
+    assert next(
+        record
+        for record in observed_records
+        if isinstance(record, Artifact) and record.name == "Dagster adapter report"
+    ).profiles == {"lifecycle": binding}
 
 
 def test_dg_workflow_creates_the_dagster_asset_without_a_second_decorator(tmp_path):
     records = tmp_path / "records"
+    lifecycle = new_lifecycle()
 
     def publisher_for(_context):
         return LocalArtifactPublisher(
@@ -81,6 +97,7 @@ def test_dg_workflow_creates_the_dagster_asset_without_a_second_decorator(tmp_pa
         source=OpaqueSource(reason="Dagster workflow projection test source"),
         asset_key="workflow_report",
         group_name="reports",
+        lifecycle=lambda _context: lifecycle,
     )
     def workflow_report(context: dg.AssetExecutionContext) -> dict[str, int]:
         return build_report_workflow()
@@ -98,6 +115,12 @@ def test_dg_workflow_creates_the_dagster_asset_without_a_second_decorator(tmp_pa
         observed_records = publisher.records()
     assert [record.kind for record in observed_records].count("computation") == 1
     assert [record.kind for record in observed_records].count("execution") == 1
+    assert (
+        next(
+            record for record in observed_records if isinstance(record, Execution)
+        ).profiles["lifecycle"]
+        == lifecycle.profile_bindings()["lifecycle"]
+    )
 
 
 def test_dagster_asset_rejects_unrecognized_context_fields(tmp_path):

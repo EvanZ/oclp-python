@@ -262,10 +262,51 @@ creates a new immutable OCLP Execution with the same run identity and a new
 retry number. A selected Dagster subset emits records only for steps Dagster
 executes.
 
-### Application-owned grouping profiles
+### Opt-in lifecycle grouping
+
+`lifecycle=` is a portable, opt-in grouping identity for work that belongs to
+one application lifecycle but happens in separate scheduler runs. All Dagster
+projection decorators—including `dg_workflow` and the low-level
+`dagster_asset`—accept either a `Lifecycle`, a UUID (or UUID string), or a
+`context -> lifecycle` resolver. The SDK attaches the standard
+`profiles.lifecycle` binding to concrete Artifacts, ArtifactSets, release
+manifests, and Executions; it never puts the binding on a reusable
+Computation.
+
+```python
+from oclp import lifecycle_from_id, new_lifecycle
+
+# The application mints this before the release begins, then persists the ID
+# in its own request or partition state.
+lifecycle = new_lifecycle()
+
+@dg_computation(
+    workflow=train,
+    publisher=publisher_for_context,
+    source=source_for_context,
+    asset_key="candidate_model",
+    inputs={"features": dg.AssetIn(key=dg.AssetKey("features"))},
+    lifecycle=lambda context: lifecycle_from_id(context.partition_key),
+)
+@computation(...)
+def train_candidate(...):
+    ...
+```
+
+Use the same identity later for release-backed inference with
+`OclpRun(..., lifecycle=lifecycle_from_profiles(release.artifact_set.profiles))`.
+Matching lifecycle IDs are a grouping assertion only; they do not add Dagster
+dependencies, OCLP dataflow edges, membership, Events, or statuses. The
+portable contract is defined by the
+[`lifecycle` profile](https://github.com/EvanZ/oclp-profiles/tree/main/spec/lifecycle.md),
+not by Dagster or this example application.
+
+### Application-owned metadata profiles
 
 `application_profiles` lets the granular projection decorators attach durable,
-application-owned facts without teaching the SDK a domain-specific field. It
+application-owned facts without teaching the SDK a domain-specific field. Use
+the standard `lifecycle=` argument for portable cross-run grouping; keep this
+escape hatch for application or adapter facts such as an MLflow parent ID. It
 accepts either a profile mapping or a `context -> profile mapping` factory.
 The mapping is attached to the projected Execution alongside the SDK-owned
 `run` and `dagster` profiles, and to Artifacts, explicit ArtifactSets, and
@@ -279,9 +320,9 @@ release manifests published by that step.
     asset_key="candidate_model",
     inputs={"features": dg.AssetIn(key=dg.AssetKey("features"))},
     application_profiles=lambda context: {
-        "my_application": {
+        "my_application.mlflow_parent": {
             "version": "1",
-            "release_cycle_id": context.partition_key,
+            "mlflow_parent_run_id": parent_run_id_for(context.partition_key),
         }
     },
 )

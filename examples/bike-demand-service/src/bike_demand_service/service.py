@@ -38,6 +38,7 @@ from oclp import (
     computation,
     evidence,
     json_artifact,
+    lifecycle_from_profiles,
     load_release_manifest,
     output_artifact_id,
     source_from_git_checkout,
@@ -47,10 +48,10 @@ from pydantic import BaseModel, ConfigDict
 
 from bike_demand_service.data import FEATURE_COLUMNS, model_features
 from bike_demand_service.environment import DemoEnvironment
-from bike_demand_service.release_cycle import (
+from bike_demand_service.mlflow_parent import (
     MLFLOW_EXPERIMENT_NAME,
-    RELEASE_CYCLE_PROFILE,
-    release_cycle_profile_from_profiles,
+    MLFLOW_PARENT_PROFILE,
+    mlflow_parent_profile_from_profiles,
 )
 
 
@@ -192,16 +193,20 @@ def create_app(
     environment.prepare()
     release = load_release_manifest(release_manifest_path)
     try:
-        cycle_profile = release_cycle_profile_from_profiles(
+        lifecycle = lifecycle_from_profiles(release.artifact_set.profiles)
+    except ValueError:
+        # Releases created before the opt-in profile remain serveable.
+        lifecycle = None
+    try:
+        mlflow_parent = mlflow_parent_profile_from_profiles(
             release.artifact_set.profiles
         )
     except ValueError:
-        # Existing non-Dagster demo releases predate the application profile.
-        # They remain serveable, but cannot be associated with a parent run.
-        cycle_profile = None
-    cycle_profiles = (
-        {RELEASE_CYCLE_PROFILE: cycle_profile.model_dump(mode="json")}
-        if cycle_profile is not None
+        # A portable lifecycle never requires the optional MLflow projection.
+        mlflow_parent = None
+    mlflow_profiles = (
+        {MLFLOW_PARENT_PROFILE: mlflow_parent.model_dump(mode="json")}
+        if mlflow_parent is not None
         else None
     )
     app = FastAPI(
@@ -209,8 +214,8 @@ def create_app(
         version="0.1.0",
     )
     app.state.model_release = release
-    app.state.release_cycle_id = (
-        cycle_profile.release_cycle_id if cycle_profile is not None else None
+    app.state.lifecycle_id = (
+        str(lifecycle.lifecycle_id) if lifecycle is not None else None
     )
 
     @app.get("/health")
@@ -222,8 +227,8 @@ def create_app(
             "model_release_id": release.artifact_set.id,
             "release_manifest": str(release_manifest_path),
         }
-        if cycle_profile is not None:
-            response["release_cycle_id"] = cycle_profile.release_cycle_id
+        if lifecycle is not None:
+            response["lifecycle_id"] = str(lifecycle.lifecycle_id)
         return response
 
     @app.post("/predict", response_model=PredictionResponse)
@@ -251,16 +256,17 @@ def create_app(
             with OclpRun(
                 publisher=publisher,
                 source=source,
-                profiles=cycle_profiles,
-                record_profiles=cycle_profiles,
+                profiles=mlflow_profiles,
+                record_profiles=mlflow_profiles,
+                lifecycle=lifecycle,
                 adapters=(
                     (
                         MlflowAdapter(
                             experiment_name=MLFLOW_EXPERIMENT_NAME,
-                            parent_profile=RELEASE_CYCLE_PROFILE,
+                            parent_profile=MLFLOW_PARENT_PROFILE,
                         ),
                     )
-                    if cycle_profiles is not None
+                    if mlflow_profiles is not None
                     else ()
                 ),
             ) as observed:
@@ -272,9 +278,7 @@ def create_app(
                     request_artifact,
                 )
                 execution = observed.execution_for(result)
-                response_artifact = observed.outputs_for(result)[
-                    "prediction_response"
-                ]
+                response_artifact = observed.outputs_for(result)["prediction_response"]
 
         response = result["prediction_response"]
         if not isinstance(response, dict):  # pragma: no cover - function contract.

@@ -101,6 +101,15 @@ from oclp.models import (
     ParameterDefinition,
     ServiceSource,
 )
+from oclp.profiles.lifecycle import (
+    LIFECYCLE_PROFILE,
+    LIFECYCLE_PROFILE_VERSION,
+    Lifecycle,
+    LifecycleBinding,
+    lifecycle_from_id,
+    lifecycle_from_profiles,
+    new_lifecycle,
+)
 from oclp.runtime import (
     ArtifactSetHandle,
     OclpRun,
@@ -158,6 +167,13 @@ __all__ = [
     "JsonMappingAdapter",
     "LightGBMModelAdapter",
     "LightGBMModelArtifact",
+    "LIFECYCLE_PROFILE",
+    "LIFECYCLE_PROFILE_VERSION",
+    "Lifecycle",
+    "LifecycleBinding",
+    "lifecycle_from_id",
+    "lifecycle_from_profiles",
+    "new_lifecycle",
     "MlflowAdapter",
     "MlflowMetrics",
     "MlflowModelRegistration",

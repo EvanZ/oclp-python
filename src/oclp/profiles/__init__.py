@@ -15,6 +15,15 @@ from oclp.profiles.execution_context import (
     ExecutionContextManifest,
     ExecutionRuntime,
 )
+from oclp.profiles.lifecycle import (
+    LIFECYCLE_PROFILE,
+    LIFECYCLE_PROFILE_VERSION,
+    Lifecycle,
+    LifecycleBinding,
+    lifecycle_from_id,
+    lifecycle_from_profiles,
+    new_lifecycle,
+)
 from oclp.profiles.release_manifest import (
     RELEASE_MANIFEST_PROFILE,
     RELEASE_MANIFEST_PROFILE_VERSION,
@@ -44,6 +53,13 @@ __all__ = [
     "ExecutionContextBinding",
     "ExecutionContextManifest",
     "ExecutionRuntime",
+    "LIFECYCLE_PROFILE",
+    "LIFECYCLE_PROFILE_VERSION",
+    "Lifecycle",
+    "LifecycleBinding",
+    "lifecycle_from_id",
+    "lifecycle_from_profiles",
+    "new_lifecycle",
     "EXECUTION_STARTED",
     "EXECUTION_TERMINAL",
     "RUN_PROFILE",

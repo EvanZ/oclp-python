@@ -103,8 +103,8 @@ The batch milestone also uses MLflow as a parallel experiment-tracking view.
 It is not the source of truth for OCLP records or Artifact identity.
 
 - The non-Dagster demo uses one MLflow run for one OCLP model-training run.
-- A Dagster `release_cycle` creates one persistent MLflow parent run. Every
-  bootstrap, preparation, fold, aggregation, release, and release-profiled
+- A Dagster release lifecycle creates one persistent MLflow parent run. Every
+  bootstrap, preparation, fold, aggregation, release, and release-backed
   inference OCLP observation becomes an independently completed child run.
 - The SDK adapter logs canonical OCLP record JSON, UUID cross-links, typed
   Execution parameters, and numeric Evidence details.
@@ -118,10 +118,11 @@ The initial demo will use local MLflow metadata and artifacts under
 leaving the OCLP DuckDB store independently inspectable in Cyclops.
 
 MLflow is useful here for experiment comparison. A FastAPI process serving a
-Dagster-created release reads the `bike_demand` profile from its release
-ArtifactSet and creates a request child run under that release cycle's parent.
-Older demo releases that predate the profile remain serveable but have no
-parent-run association. OCLP remains authoritative for the release, request,
+Dagster-created release reads its portable `lifecycle` profile and the optional
+`bike_demand.mlflow-parent` binding from the release ArtifactSet. It creates a
+request child run under the release's MLflow parent while retaining the same
+portable lifecycle identity. Older demo releases that predate either binding
+remain serveable. OCLP remains authoritative for the release, request,
 response, Execution, and Events. Operational export such as OpenTelemetry
 remains a later concern.
 
@@ -133,7 +134,7 @@ examples/bike-demand-service/
   src/bike_demand_service/
     data.py                   # UCI access and time-ordered feature preparation
     modeling.py               # training plan, CatBoost training, evaluation, scoring
-    release_cycle.py          # example-owned cycle profile and MLflow experiment name
+    mlflow_parent.py          # example-only MLflow-parent binding and experiment name
     environment.py            # local OCLP, payload, and MLflow storage locations
     runner.py                 # declared run, bootstrap, and SDK MLflow adapter configuration
     cli.py                    # executable model-training command
@@ -225,11 +226,12 @@ the parent MLflow run finished.
 The graph is intentionally multi-run. Its catalog-backed OCLP Artifact I/O
 manager persists only Artifact UUID pointers between workers and rehydrates
 the exact handles from the OCLP catalog. The generic SDK profile records the
-Dagster partition key. The example-owned `bike_demand` profile carries
-`release_cycle_id` and `mlflow_parent_run_id` on the corresponding
-Executions, Artifacts, final ArtifactSet, and manifest; “cycle” is solely this
-example's partition dimension. The final ArtifactSet UUID is the actual
-`release_id`, not the `release_cycle_id`.
+Dagster partition key. The portable `lifecycle` profile carries one UUID across
+the corresponding Executions, Artifacts, final ArtifactSet, manifest, and
+later inference records; the example-only `bike_demand.mlflow-parent` profile
+carries only the MLflow parent-run ID. “Cycle” remains solely this example's
+partition dimension. The final ArtifactSet UUID is the actual `release_id`,
+not the lifecycle ID.
 
 The example also declares one OCLP `@run` template for each orchestration
 phase: **Bike demand release-cycle start**, **Bike demand cycle preparation**,

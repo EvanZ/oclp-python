@@ -18,8 +18,10 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import dagster as dg
 from oclp import (
     ArtifactHandle,
+    Lifecycle,
     create_mlflow_parent_run,
     finish_mlflow_parent_run,
+    lifecycle_from_id,
 )
 from oclp.dagster import (
     dg_artifact,
@@ -33,6 +35,11 @@ from oclp.sources import source_from_git_checkout
 
 from bike_demand_service.data import download_source_csv, prepare_features
 from bike_demand_service.environment import DemoEnvironment
+from bike_demand_service.mlflow_parent import (
+    MLFLOW_EXPERIMENT_NAME,
+    MLFLOW_PARENT_PROFILE,
+    mlflow_parent_profiles,
+)
 from bike_demand_service.modeling import (
     chart_holdout_demand_forecast,
     chart_temporal_validation_quality,
@@ -43,10 +50,6 @@ from bike_demand_service.modeling import (
     score_holdout,
     train_final_model,
     train_fold,
-)
-from bike_demand_service.release_cycle import (
-    MLFLOW_EXPERIMENT_NAME,
-    release_cycle_profiles,
 )
 from bike_demand_service.runner import (
     run_bike_demand_aggregate_cycle,
@@ -60,7 +63,7 @@ _IO_MANAGER_KEY = "oclp_artifact_io_manager"
 
 
 def new_release_cycle_id() -> str:
-    """Create the application-owned UUID used as one Dagster cycle partition."""
+    """Create the lifecycle UUID used as one Dagster cycle partition."""
 
     return str(uuid4())
 
@@ -74,6 +77,7 @@ def _release_cycle_id_for_start(context: dg.AssetExecutionContext) -> str:
             f"bike-demand-release-cycle-start:{context.run.run_id}",
         )
     )
+
 
 # A cycle key is selected before the preparation job runs. It is deliberately
 # opaque: the persisted training-plan Artifact, rather than the key format,
@@ -161,7 +165,7 @@ def _release_cycle_parent_run_id(release_cycle_id: str) -> str:
         tracking_uri=_mlflow_tracking_uri(environment),
         artifact_location=(environment.mlflow_root / "artifacts").resolve().as_uri(),
         identity_tags={
-            "oclp.profile.bike_demand.release_cycle_id": release_cycle_id,
+            "oclp.profile.lifecycle.lifecycle_id": release_cycle_id,
         },
         tags={
             "bike_demand.mlflow_role": "release-cycle-parent",
@@ -169,31 +173,52 @@ def _release_cycle_parent_run_id(release_cycle_id: str) -> str:
     )
 
 
-def _profiles_for_release_cycle(
+def _mlflow_parent_profiles_for_release_cycle(
     release_cycle_id: str,
 ) -> dict[str, dict[str, object]]:
-    """Resolve the profile and persistent parent for one cycle UUID."""
+    """Resolve the optional MLflow parent for one lifecycle UUID."""
 
-    return release_cycle_profiles(
-        release_cycle_id=release_cycle_id,
+    return mlflow_parent_profiles(
         mlflow_parent_run_id=_release_cycle_parent_run_id(release_cycle_id),
     )
 
 
-def _start_release_cycle_profiles(
+def _lifecycle_for_release_cycle(release_cycle_id: str) -> Lifecycle:
+    """Return the portable lifecycle carried by all records for one cycle."""
+
+    return lifecycle_from_id(release_cycle_id)
+
+
+def _start_lifecycle(
+    context: dg.AssetExecutionContext,
+) -> Lifecycle:
+    """Provide a stable lifecycle before the unpartitioned start is observed."""
+
+    return _lifecycle_for_release_cycle(_release_cycle_id_for_start(context))
+
+
+def _start_mlflow_parent_profiles(
     context: dg.AssetExecutionContext,
 ) -> dict[str, dict[str, object]]:
-    """Provide a stable UUID and parent before the start Artifact is observed."""
+    """Build the MLflow parent binding before the start Artifact opens its run."""
 
-    return _profiles_for_release_cycle(_release_cycle_id_for_start(context))
+    return _mlflow_parent_profiles_for_release_cycle(
+        _release_cycle_id_for_start(context)
+    )
 
 
-def _bootstrap_release_cycle_profiles(
+def _bootstrap_lifecycle(context: dg.AssetExecutionContext) -> Lifecycle:
+    """Bind the preparation bootstrap Artifact to its selected lifecycle."""
+
+    return _lifecycle_for_release_cycle(_training_cycle_id(context))
+
+
+def _bootstrap_mlflow_parent_profiles(
     context: dg.AssetExecutionContext,
 ) -> dict[str, dict[str, object]]:
-    """Build cycle facts before the bootstrap Artifact opens its OCLP run."""
+    """Build the MLflow parent binding before the partitioned bootstrap runs."""
 
-    return _profiles_for_release_cycle(_training_cycle_id(context))
+    return _mlflow_parent_profiles_for_release_cycle(_training_cycle_id(context))
 
 
 def _latest_cycle_asset_event(
@@ -247,14 +272,21 @@ def _release_cycle_payload(
     return payload
 
 
-def _release_cycle_profiles(
+def _release_cycle_lifecycle(context: dg.AssetExecutionContext) -> Lifecycle:
+    """Read the portable lifecycle identity from the persisted cycle Artifact."""
+
+    return _lifecycle_for_release_cycle(
+        str(_release_cycle_payload(context)["release_cycle_id"])
+    )
+
+
+def _release_cycle_mlflow_parent_profiles(
     context: dg.AssetExecutionContext,
 ) -> dict[str, dict[str, object]]:
-    """Use the bootstrap Artifact as the sole source of child-run context."""
+    """Use the bootstrap Artifact as the source of MLflow child-run context."""
 
     payload = _release_cycle_payload(context)
-    return release_cycle_profiles(
-        release_cycle_id=str(payload["release_cycle_id"]),
+    return mlflow_parent_profiles(
         mlflow_parent_run_id=str(payload["mlflow_parent_run_id"]),
     )
 
@@ -303,17 +335,19 @@ def _temporal_fold_run_name(context: dg.AssetExecutionContext) -> str:
             is_required=False,
         ),
     },
-    application_profiles=_start_release_cycle_profiles,
+    application_profiles=_start_mlflow_parent_profiles,
+    lifecycle=_start_lifecycle,
 )
 def bike_demand_release_cycle_request(
     context: dg.AssetExecutionContext,
 ) -> ArtifactHandle:
     """Start a cycle without first selecting a dynamic Dagster partition."""
 
-    profile = _start_release_cycle_profiles(context)["bike_demand"]
+    release_cycle_id = _release_cycle_id_for_start(context)
+    parent = _start_mlflow_parent_profiles(context)[MLFLOW_PARENT_PROFILE]
     return request_release_cycle(
-        release_cycle_id=str(profile["release_cycle_id"]),
-        mlflow_parent_run_id=str(profile["mlflow_parent_run_id"]),
+        release_cycle_id=release_cycle_id,
+        mlflow_parent_run_id=str(parent["mlflow_parent_run_id"]),
         fold_count=int(context.op_config["fold_count"]),
         temporal_validation_rmse_max=float(
             context.op_config["temporal_validation_rmse_max"]
@@ -337,16 +371,17 @@ def bike_demand_release_cycle_request(
             is_required=False,
         ),
     },
-    application_profiles=_bootstrap_release_cycle_profiles,
+    application_profiles=_bootstrap_mlflow_parent_profiles,
+    lifecycle=_bootstrap_lifecycle,
 )
 def bike_demand_release_cycle(context: dg.AssetExecutionContext) -> ArtifactHandle:
     """Persist one application-owned release cycle and its MLflow parent run."""
 
-    profiles = _bootstrap_release_cycle_profiles(context)
-    cycle = profiles["bike_demand"]
+    release_cycle_id = _training_cycle_id(context)
+    parent = _bootstrap_mlflow_parent_profiles(context)[MLFLOW_PARENT_PROFILE]
     return create_release_cycle(
-        release_cycle_id=str(cycle["release_cycle_id"]),
-        mlflow_parent_run_id=str(cycle["mlflow_parent_run_id"]),
+        release_cycle_id=release_cycle_id,
+        mlflow_parent_run_id=str(parent["mlflow_parent_run_id"]),
         fold_count=int(context.op_config["fold_count"]),
         temporal_validation_rmse_max=float(
             context.op_config["temporal_validation_rmse_max"]
@@ -363,7 +398,8 @@ def bike_demand_release_cycle(context: dg.AssetExecutionContext) -> ArtifactHand
     partitions_def=training_cycles,
     io_manager_key=_IO_MANAGER_KEY,
     deps=(dg.AssetKey("bike_demand_release_cycle"),),
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_training_plan(context: dg.AssetExecutionContext) -> ArtifactHandle:
     """Persist the selected fold count as the cycle's immutable plan."""
@@ -387,7 +423,8 @@ def bike_demand_training_plan(context: dg.AssetExecutionContext) -> ArtifactHand
     partitions_def=training_cycles,
     io_manager_key=_IO_MANAGER_KEY,
     deps=(dg.AssetKey("bike_demand_release_cycle"),),
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_raw_source() -> ArtifactHandle:
     """Acquire the UCI Bike Sharing source as a transparent graph input."""
@@ -412,7 +449,8 @@ def bike_demand_raw_source() -> ArtifactHandle:
     },
     group_name="bike_demand",
     partitions_def=training_cycles,
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_prepare_features(
     source_snapshot: ArtifactHandle,
@@ -446,7 +484,8 @@ def bike_demand_prepare_features(
     group_name="bike_demand",
     partitions_def=fold_partitions,
     context_parameter="context",
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
     run_name=_temporal_fold_run_name,
 )
 def bike_demand_train_fold(
@@ -481,7 +520,8 @@ def bike_demand_train_fold(
     group_name="bike_demand",
     partitions_def=training_cycles,
     context_parameter="context",
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_evaluate_candidate(
     fold_predictions: tuple[ArtifactHandle, ...],
@@ -517,7 +557,8 @@ def bike_demand_evaluate_candidate(
     partitions_def=training_cycles,
     io_manager_key=_IO_MANAGER_KEY,
     context_parameter="context",
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_chart_temporal_validation(
     fold_predictions: tuple[ArtifactHandle, ...],
@@ -549,7 +590,8 @@ def bike_demand_chart_temporal_validation(
     group_name="bike_demand",
     partitions_def=training_cycles,
     io_manager_key=_IO_MANAGER_KEY,
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_train_final_model(
     feature_table: ArtifactHandle,
@@ -579,7 +621,8 @@ def bike_demand_train_final_model(
     },
     group_name="bike_demand",
     partitions_def=training_cycles,
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_score_holdout(
     model: ArtifactHandle,
@@ -602,7 +645,8 @@ def bike_demand_score_holdout(
     group_name="bike_demand",
     partitions_def=training_cycles,
     io_manager_key=_IO_MANAGER_KEY,
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_chart_holdout_forecast(predictions: ArtifactHandle) -> object:
     """Render the final holdout forecast from the visible prediction asset."""
@@ -634,7 +678,8 @@ def bike_demand_chart_holdout_forecast(predictions: ArtifactHandle) -> object:
     },
     group_name="bike_demand",
     partitions_def=training_cycles,
-    application_profiles=_release_cycle_profiles,
+    application_profiles=_release_cycle_mlflow_parent_profiles,
+    lifecycle=_release_cycle_lifecycle,
 )
 def bike_demand_model_release() -> None:
     """Assemble the release from exact, visible Artifact asset partitions."""
