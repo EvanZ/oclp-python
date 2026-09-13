@@ -83,6 +83,33 @@ declared Computation when the downstream call should reload verified bytes; in
 one process, passing the raw result directly also preserves the existing
 materialized binding.
 
+## Return several declared outputs
+
+When a Computation declares several Artifact outputs, return named values. A
+mapping is the standard form; a dataclass or `NamedTuple` with same-named fields
+is also supported. Positional tuples and lists are not supported because each
+Artifact port has an independent durable identity:
+
+```python
+@computation(
+    name="Train candidate",
+    outputs={
+        "model": JsonArtifact(name="Candidate model"),
+        "metrics": JsonArtifact(name="Candidate metrics"),
+    },
+)
+def train_candidate(...) -> dict[str, object]:
+    return {
+        "model": {"algorithm": "example"},
+        "metrics": {"rmse": 212.4},
+    }
+```
+
+Every declared port must be present by name. The runtime materializes each
+value through that port's explicit Artifact representation. Native orchestration
+integrations can then select which of those named Artifacts to expose; see the
+[Dagster mixed-decorator contract](dagster.md#the-mixed-decorator-contract).
+
 For several Artifacts of one type, declare `many(CsvArtifact)` on the input
 port; the callable receives its normal ordered collection after the SDK
 verifies and loads each member.

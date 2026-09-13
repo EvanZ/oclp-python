@@ -1733,7 +1733,8 @@ def _direct_output_value(
         return result
     raise ValueError(
         f"multi-output Computation result has no field for port {port!r}; "
-        "return an object with same-named fields or a mapping by port"
+        "return an object with same-named fields or a mapping by port; "
+        "positional tuples and lists are not supported"
     )
 
 

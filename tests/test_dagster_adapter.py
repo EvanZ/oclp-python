@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import pytest
 
 from oclp import (
@@ -78,6 +80,48 @@ def split_native_report() -> dict[str, dict[str, int]]:
     """Produce two canonical OCLP outputs through one Dagster multi-asset."""
 
     return {"left": {"value": 1}, "right": {"value": 2}}
+
+
+class _MixedNativeOutputs(NamedTuple):
+    """Named domain result spanning native-only and OCLP-only outputs."""
+
+    shared: dict[str, int]
+    dagster_only: dict[str, int]
+    oclp_only: dict[str, int]
+
+
+@computation(
+    name="Partially shared native Dagster report",
+    outputs={
+        "shared": JsonArtifact(name="Shared native report"),
+        "oclp_only": JsonArtifact(name="OCLP-only report"),
+    },
+    adapters=(dagster_adapter(),),
+)
+def partially_shared_native_report() -> _MixedNativeOutputs:
+    """Return one named result across the union of both output sets."""
+
+    return _MixedNativeOutputs(
+        shared={"value": 1},
+        dagster_only={"value": 2},
+        oclp_only={"value": 3},
+    )
+
+
+@computation(
+    name="Explicitly bound native Dagster report",
+    outputs={"canonical_report": JsonArtifact(name="Canonical report")},
+    adapters=(
+        dagster_adapter(output_bindings={"native_report": "canonical_report"}),
+    ),
+)
+def explicitly_bound_native_report() -> dict[str, dict[str, int]]:
+    """Return named values when native and canonical port names differ."""
+
+    return {
+        "canonical_report": {"value": 4},
+        "dagster_only": {"value": 5},
+    }
 
 
 @computation(
@@ -369,6 +413,105 @@ def test_dagster_adapter_returns_canonical_outputs_to_a_native_multi_asset(tmp_p
         metadata["oclp.run.name"].value
         for metadata in metadata_by_asset_key.values()
     } == {"Split native Dagster report"}
+
+
+def test_dagster_adapter_bridges_only_the_shared_named_outputs(tmp_path):
+    records = tmp_path / "records"
+
+    def publisher_for(_context):
+        return LocalArtifactPublisher(
+            catalog_path=records / "catalog.duckdb",
+            record_root=records,
+            payload_root=tmp_path / "payloads",
+        )
+
+    partial = dg.multi_asset(
+        outs={
+            "shared": dg.AssetOut(key="native_shared"),
+            "dagster_only": dg.AssetOut(key="native_dagster_only"),
+        },
+        required_resource_keys={"oclp"},
+    )(partially_shared_native_report)
+
+    result = dg.materialize(
+        [partial],
+        resources={
+            "oclp": oclp_dagster_resource(
+                publisher=publisher_for,
+                source=OpaqueSource(reason="partial native Dagster output test source"),
+            )
+        },
+        raise_on_error=True,
+    )
+
+    assert result.output_for_node(
+        "partially_shared_native_report", "dagster_only"
+    ) == {"value": 2}
+    metadata_by_asset_key = {
+        event.event_specific_data.materialization.asset_key.to_user_string(): (
+            event.event_specific_data.materialization.metadata
+        )
+        for event in result.get_asset_materialization_events()
+    }
+    shared_metadata = metadata_by_asset_key["native_shared"]
+    dagster_only_metadata = metadata_by_asset_key["native_dagster_only"]
+    assert isinstance(shared_metadata["oclp.output.shared.id"].value, str)
+    assert "oclp.output.oclp_only.id" not in shared_metadata
+    assert "oclp.output.shared.id" not in dagster_only_metadata
+    assert isinstance(dagster_only_metadata["oclp.execution.id"].value, str)
+
+    with publisher_for(None) as publisher:
+        artifacts = [
+            record for record in publisher.records() if isinstance(record, Artifact)
+        ]
+    assert {artifact.name for artifact in artifacts} == {
+        "Shared native report",
+        "OCLP-only report",
+    }
+
+
+def test_dagster_adapter_accepts_an_explicit_native_to_oclp_output_binding(tmp_path):
+    records = tmp_path / "records"
+
+    def publisher_for(_context):
+        return LocalArtifactPublisher(
+            catalog_path=records / "catalog.duckdb",
+            record_root=records,
+            payload_root=tmp_path / "payloads",
+        )
+
+    bound = dg.multi_asset(
+        outs={
+            "native_report": dg.AssetOut(key="native_report"),
+            "dagster_only": dg.AssetOut(key="native_only"),
+        },
+        required_resource_keys={"oclp"},
+    )(explicitly_bound_native_report)
+
+    result = dg.materialize(
+        [bound],
+        resources={
+            "oclp": oclp_dagster_resource(
+                publisher=publisher_for,
+                source=OpaqueSource(
+                    reason="explicit native Dagster output test source"
+                ),
+            )
+        },
+        raise_on_error=True,
+    )
+
+    metadata_by_asset_key = {
+        event.event_specific_data.materialization.asset_key.to_user_string(): (
+            event.event_specific_data.materialization.metadata
+        )
+        for event in result.get_asset_materialization_events()
+    }
+    assert isinstance(
+        metadata_by_asset_key["native_report"]["oclp.output.canonical_report.id"].value,
+        str,
+    )
+    assert "oclp.output.canonical_report.id" not in metadata_by_asset_key["native_only"]
 
 
 def test_dagster_adapter_assembles_a_canonical_artifact_set(tmp_path):

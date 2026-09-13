@@ -481,8 +481,8 @@ def computation(
     actual in-memory value delivered to its body.
 
     For multiple outputs, every port name must match a field on the returned
-    object (or a key in a returned mapping). A single output persists the
-    return value itself.
+    object (or a key in a returned mapping); positional tuples and lists are
+    deliberately unsupported. A single output persists the return value itself.
 
     ``artifact_set`` optionally groups selected persisted output ports into one
     additional ArtifactSet output of the same real Execution. Use a

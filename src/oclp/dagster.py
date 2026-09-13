@@ -55,6 +55,8 @@ LifecycleDeclaration: TypeAlias = (
     LifecycleInput | Callable[[DagsterContext], LifecycleInput]
 )
 DagsterRunName: TypeAlias = str | Callable[[DagsterContext], str]
+DagsterOutputBindings: TypeAlias = Mapping[str, str]
+"""Map native Dagster output names to differently named OCLP output ports."""
 
 _SOURCE_TYPES = (GitSource, ArtifactSource, ServiceSource, OpaqueSource)
 
@@ -149,6 +151,7 @@ class DagsterAdapter:
     artifact: ArtifactHandle | None = None
     execution_id: str | None = None
     outputs: dict[str, ArtifactHandle] = field(default_factory=dict)
+    output_bindings: dict[str, str] = field(default_factory=dict)
     artifact_set: ArtifactSetHandle | None = None
 
     def on_artifact(self, _observed: OclpRun, artifact: ArtifactHandle) -> None:
@@ -193,8 +196,6 @@ class DagsterAdapter:
             metadata["oclp.artifact.id"] = self.artifact.reference.id
         if self.execution_id is not None:
             metadata["oclp.execution.id"] = self.execution_id
-        for port, artifact in self.outputs.items():
-            metadata[f"oclp.output.{port}.id"] = artifact.reference.id
         if self.artifact_set is not None:
             metadata["oclp.artifact_set.id"] = self.artifact_set.reference.id
         for context_field in self.context_fields:
@@ -206,12 +207,17 @@ class DagsterAdapter:
             "keys_by_output_name",
             None,
         )
-        if isinstance(keys_by_output, Mapping) and len(keys_by_output) > 1:
-            for port in self.outputs:
-                asset_key = keys_by_output.get(port)
-                if asset_key is not None:
-                    self.context.add_asset_metadata(metadata, asset_key=asset_key)
+        if isinstance(keys_by_output, Mapping):
+            for output_name, asset_key in keys_by_output.items():
+                output_metadata = dict(metadata)
+                port = self.output_bindings.get(output_name)
+                artifact = self.outputs.get(port) if port is not None else None
+                if artifact is not None:
+                    output_metadata[f"oclp.output.{port}.id"] = artifact.reference.id
+                self.context.add_asset_metadata(output_metadata, asset_key=asset_key)
             return
+        for port, artifact in self.outputs.items():
+            metadata[f"oclp.output.{port}.id"] = artifact.reference.id
         self.context.add_asset_metadata(metadata)
 
 
@@ -222,12 +228,32 @@ class DagsterDeclarationAdapter:
     lifecycle: LifecycleDeclaration | None = None
     profiles: ApplicationProfiles | None = None
     run_name: DagsterRunName | None = None
+    output_bindings: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.run_name is not None and not (
             isinstance(self.run_name, str) or callable(self.run_name)
         ):
             raise TypeError("dagster_adapter run_name must be a string or callable")
+        if any(
+            not isinstance(dagster_output, str)
+            or not dagster_output
+            or not isinstance(oclp_port, str)
+            or not oclp_port
+            for dagster_output, oclp_port in self.output_bindings
+        ):
+            raise ValueError(
+                "dagster_adapter output_bindings must map non-empty Dagster "
+                "output names to non-empty OCLP output ports"
+            )
+        if len({dagster_output for dagster_output, _ in self.output_bindings}) != len(
+            self.output_bindings
+        ):
+            raise ValueError("dagster_adapter output_bindings keys must be unique")
+        if len({oclp_port for _, oclp_port in self.output_bindings}) != len(
+            self.output_bindings
+        ):
+            raise ValueError("dagster_adapter output_bindings values must be unique")
 
     def wrap(
         self,
@@ -235,6 +261,10 @@ class DagsterDeclarationAdapter:
         *,
         kind: DeclarationKind,
     ) -> Callable[Parameters, Result]:
+        if kind != "computation" and self.output_bindings:
+            raise ValueError(
+                "dagster_adapter output_bindings apply only to @computation"
+            )
         signature = inspect.signature(function)
         public_signature = _dagster_asset_signature(
             signature,
@@ -256,6 +286,15 @@ class DagsterDeclarationAdapter:
 
             resource = _oclp_resource(context)
             step = _dagster_declaration_run_context(context)
+            output_bindings = (
+                _resolve_dagster_output_bindings(
+                    context=context,
+                    function=function,
+                    configured_bindings=self.output_bindings,
+                )
+                if kind == "computation"
+                else {}
+            )
             record_profiles = _resolve_application_profiles(
                 self.profiles if self.profiles is not None else resource.profiles,
                 context,
@@ -270,6 +309,7 @@ class DagsterDeclarationAdapter:
                     "retry_number",
                 ),
                 strict=resource.strict,
+                output_bindings=output_bindings,
             )
             with resource.publisher(context) as publisher:
                 with observe_run(
@@ -306,6 +346,8 @@ class DagsterDeclarationAdapter:
                             result=result,
                             function=function,
                             observed=observed_run,
+                            context=context,
+                            output_bindings=output_bindings,
                         ),
                     )
 
@@ -326,6 +368,7 @@ def dagster_adapter(
     lifecycle: LifecycleDeclaration | None = None,
     profiles: ApplicationProfiles | None = None,
     run_name: DagsterRunName | None = None,
+    output_bindings: DagsterOutputBindings | None = None,
 ) -> DagsterDeclarationAdapter:
     """Attach Dagster observation inside a canonical OCLP decorator.
 
@@ -335,13 +378,100 @@ def dagster_adapter(
     is the canonical Artifact, Computation, or ArtifactSet declaration name.
     Supply ``run_name`` when an application needs a context-specific label,
     such as a dynamically partitioned temporal fold.
+
+    Shared multi-asset outputs use the same local name by default. Supply
+    ``output_bindings`` only when a native Dagster output needs a differently
+    named OCLP output port: ``{"dagster_output": "oclp_port"}``. Unbound
+    Dagster outputs remain ordinary native values; unbound OCLP outputs remain
+    materialized OCLP Artifacts.
     """
+
+    normalized_output_bindings = _normalize_output_bindings(output_bindings)
 
     return DagsterDeclarationAdapter(
         lifecycle=lifecycle,
         profiles=profiles,
         run_name=run_name,
+        output_bindings=normalized_output_bindings,
     )
+
+
+def _normalize_output_bindings(
+    output_bindings: DagsterOutputBindings | None,
+) -> tuple[tuple[str, str], ...]:
+    if output_bindings is None:
+        return ()
+    if not isinstance(output_bindings, Mapping):
+        raise TypeError("dagster_adapter output_bindings must be a mapping or None")
+    return tuple(output_bindings.items())
+
+
+def _resolve_dagster_output_bindings(
+    *,
+    context: DagsterContext,
+    function: Callable[..., object],
+    configured_bindings: tuple[tuple[str, str], ...],
+) -> dict[str, str]:
+    """Resolve automatic and application-specified native/OCLP output bridges."""
+
+    dagster_outputs = _dagster_output_names(context)
+    if not dagster_outputs:
+        return {}
+    oclp_outputs = tuple(computation_template(function).output_artifacts)
+    available_dagster_outputs = set(dagster_outputs)
+    available_oclp_outputs = set(oclp_outputs)
+    bindings = dict(configured_bindings)
+
+    unknown_dagster_outputs = sorted(
+        set(bindings).difference(available_dagster_outputs)
+    )
+    if unknown_dagster_outputs:
+        raise ValueError(
+            "dagster_adapter output_bindings names native Dagster outputs that "
+            "are not declared: "
+            + ", ".join(unknown_dagster_outputs)
+        )
+    unknown_oclp_outputs = sorted(
+        set(bindings.values()).difference(available_oclp_outputs)
+    )
+    if unknown_oclp_outputs:
+        raise ValueError(
+            "dagster_adapter output_bindings names OCLP output ports that are "
+            "not declared: "
+            + ", ".join(unknown_oclp_outputs)
+        )
+
+    bound_oclp_outputs = set(bindings.values())
+    for output_name in dagster_outputs:
+        if (
+            output_name not in bindings
+            and output_name in available_oclp_outputs
+            and output_name not in bound_oclp_outputs
+        ):
+            bindings[output_name] = output_name
+            bound_oclp_outputs.add(output_name)
+
+    # A standard @dg.asset has the native output name "result", while a
+    # canonical single-output Computation uses its meaningful OCLP port name.
+    # That one-to-one bridge is unambiguous without a configuration mapping.
+    if not bindings and len(dagster_outputs) == 1 and len(oclp_outputs) == 1:
+        bindings[dagster_outputs[0]] = oclp_outputs[0]
+
+    return bindings
+
+
+def _dagster_output_names(context: DagsterContext) -> tuple[str, ...]:
+    keys_by_output = getattr(
+        getattr(context, "assets_def", None),
+        "keys_by_output_name",
+        None,
+    )
+    if not isinstance(keys_by_output, Mapping):
+        return ()
+    output_names = tuple(keys_by_output)
+    if not all(isinstance(name, str) and name for name in output_names):
+        raise TypeError("Dagster asset output names must be non-empty strings")
+    return output_names
 
 
 def _dagster_asset_signature(
@@ -366,14 +496,14 @@ def _dagster_asset_signature(
             if name != "context" and parameter.default is inspect.Parameter.empty
         ),
     ]
-    output_count = (
-        len(computation_template(function).output_artifacts)
-        if kind == "computation"
-        else 0
-    )
-    if output_count > 1:
-        return_annotation: object = tuple[tuple(Any for _ in range(output_count))]
-    elif kind in {"artifact", "artifact_set", "computation"}:
+    if kind == "computation":
+        # Native and OCLP outputs may only partially overlap. The native
+        # decorator owns the eventual Dagster return shape, so OCLP output
+        # count cannot truthfully describe this wrapper's return annotation.
+        # Leave it absent so @dg.multi_asset infers every output from its own
+        # explicit `outs` mapping.
+        return_annotation = inspect.Parameter.empty
+    elif kind in {"artifact", "artifact_set"}:
         return_annotation = Any
     else:  # pragma: no cover - DeclarationKind is closed.
         return_annotation = signature.return_annotation
@@ -500,14 +630,73 @@ def _dagster_computation_result(
     result: object,
     function: Callable[..., object],
     observed: OclpRun,
+    context: DagsterContext,
+    output_bindings: Mapping[str, str],
 ) -> object:
+    """Bridge one named domain result to native Dagster output values.
+
+    Shared outputs become exact OCLP Artifact handles. Native-only outputs stay
+    raw domain values, while OCLP-only outputs have already been materialized
+    but are intentionally omitted from the Dagster result.
+    """
+
     template = computation_template(function)
-    if not template.output_artifacts:
-        return result
-    outputs = observed.outputs_for(result)
-    if len(outputs) == 1:
-        return next(iter(outputs.values()))
-    return tuple(outputs[port] for port in template.output_artifacts)
+    oclp_outputs = (
+        observed.outputs_for(result) if template.output_artifacts else {}
+    )
+    dagster_outputs = _dagster_output_names(context)
+    if not dagster_outputs:
+        if not oclp_outputs:
+            return result
+        if len(oclp_outputs) == 1:
+            return next(iter(oclp_outputs.values()))
+        return tuple(oclp_outputs[port] for port in template.output_artifacts)
+
+    if len(dagster_outputs) == 1:
+        output_name = dagster_outputs[0]
+        oclp_port = output_bindings.get(output_name)
+        if oclp_port is not None:
+            return oclp_outputs[oclp_port]
+        return _dagster_named_output_value(
+            result=result,
+            output_name=output_name,
+            allow_direct_value=True,
+        )
+
+    return tuple(
+        (
+            oclp_outputs[output_bindings[output_name]]
+            if output_name in output_bindings
+            else _dagster_named_output_value(
+                result=result,
+                output_name=output_name,
+                allow_direct_value=False,
+            )
+        )
+        for output_name in dagster_outputs
+    )
+
+
+def _dagster_named_output_value(
+    *,
+    result: object,
+    output_name: str,
+    allow_direct_value: bool,
+) -> object:
+    """Return one native-only value from an application-owned named result."""
+
+    if isinstance(result, Mapping) and output_name in result:
+        return result[output_name]
+    try:
+        return getattr(result, output_name)
+    except AttributeError:
+        if allow_direct_value:
+            return result
+    raise ValueError(
+        "Dagster multi-asset output "
+        f"{output_name!r} is not present on the named Computation result; "
+        "return a mapping or object with same-named fields"
+    )
 
 
 def _context_value(context: DagsterContext, field: str) -> object | None:

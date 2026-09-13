@@ -187,4 +187,10 @@ def bike_demand_prepare_features(
 ) -> dict[str, object]:
     """Prepare the source features and temporal-fold definition for one cycle."""
 
-    return prepare_features_value(source_snapshot, training_plan)
+    prepared = prepare_features_value(source_snapshot, training_plan)
+    return {
+        "features": prepared["features"],
+        "fold_definition": prepared["fold_definition"],
+        "feature_contract": prepared["feature_contract"],
+        "data_metrics": prepared["data_metrics"],
+    }

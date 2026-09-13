@@ -95,11 +95,19 @@ def bike_demand_train_fold(
 ) -> dict[str, object]:
     """Train one dynamically partitioned temporal fold."""
 
-    return train_fold_value(
+    fold_outputs = train_fold_value(
         feature_table,
         fold_definition,
         fold_number=temporal_fold_number(context),
     )
+    # Multi-output OCLP and Dagster assets exchange named values. The adapter
+    # materializes the ports declared by @computation, then returns only the
+    # handles required by the outer @dg.multi_asset.
+    return {
+        "model": fold_outputs["model"],
+        "validation_predictions": fold_outputs["validation_predictions"],
+        "metrics": fold_outputs["metrics"],
+    }
 
 
 @dg.multi_asset(
@@ -161,10 +169,14 @@ def bike_demand_evaluate_candidate(
 ) -> dict[str, object]:
     """Aggregate the fold predictions into the candidate evaluation."""
 
-    return evaluate_folds_value(
+    candidate_outputs = evaluate_folds_value(
         fold_predictions,
         temporal_validation_rmse_max=temporal_validation_rmse_max,
     )
+    return {
+        "evaluation": candidate_outputs["evaluation"],
+        "training_config": candidate_outputs["training_config"],
+    }
 
 
 @dg.asset(
@@ -302,7 +314,11 @@ def bike_demand_score_holdout(
 ) -> dict[str, object]:
     """Score the final model against the holdout partition."""
 
-    return score_holdout_value(model, feature_table)
+    holdout_outputs = score_holdout_value(model, feature_table)
+    return {
+        "predictions": holdout_outputs["predictions"],
+        "metrics": holdout_outputs["metrics"],
+    }
 
 
 @dg.asset(

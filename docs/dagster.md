@@ -15,6 +15,172 @@ The adapter connects those two layers at runtime. It does not infer a
 Computation from an arbitrary `@dagster.asset`, create synthetic OCLP records,
 or hide data dependencies behind a monolithic workflow asset.
 
+## The mixed-decorator contract
+
+A native Dagster asset and a canonical OCLP declaration can describe one
+application operation, but they do not describe the same facts. Keep both
+declarations explicit and keep their shared boundary in lockstep.
+
+### Decorator order
+
+The native Dagster decorator is always outermost. `@computation` is closest to
+the function; optional OCLP extensions such as `@mlflow` and `@artifact_set`
+sit outside it:
+
+```python
+@dg.multi_asset(...)  # native Dagster orchestration: outermost
+@artifact_set(...)    # optional OCLP output-role declaration
+@mlflow(...)          # optional OCLP projection declaration
+@computation(
+    ...,
+    adapters=(dagster_adapter(),),
+)
+def train_orders(...) -> dict[str, object]:
+    ...
+```
+
+Python applies decorators from the bottom up. Dagster therefore invokes the
+OCLP-decorated callable, and the inner adapter can open an OCLP observation
+using the real Dagster execution context. Reversing the order gives an OCLP
+declaration a Dagster asset definition rather than an ordinary function.
+
+For an acquisition boundary, use the same outer/inner order with an Artifact
+decorator instead of `@computation`:
+
+```python
+@dg.asset(...)
+@csv_artifact(..., adapters=(dagster_adapter(),))
+def load_orders(...) -> pd.DataFrame:
+    ...
+```
+
+That creates an OCLP Artifact but no OCLP Computation or Execution, so it has
+no multi-output contract.
+
+### Which layer owns which facts
+
+| Concern | Owner |
+| --- | --- |
+| Asset keys, dependencies, partitions, groups, retry policy, scheduler configuration, and I/O-manager selection | Native `@dg.asset` or `@dg.multi_asset` |
+| Computation identity, OCLP Artifact representation and metadata, portable input/output ports, Evidence, ArtifactSet roles, and MLflow projections | Canonical OCLP decorators |
+| Opening the observation, publishing OCLP records, passing scheduler facts, and returning OCLP handles to Dagster | `dagster_adapter()` |
+
+The adapter must appear in the canonical declaration's `adapters=` tuple, and
+the outer asset must declare `required_resource_keys={"oclp"}`. The resource
+provides the publisher, implementation source, and any project-level OCLP
+adapters or lifecycle configuration.
+
+### Input contract
+
+For a Computation asset, these three names identify the same local input port:
+
+```python
+@dg.asset(ins={"orders": dg.AssetIn(key=dg.AssetKey("raw_orders"))})
+@computation(inputs={"orders": JsonArtifact}, adapters=(dagster_adapter(),))
+def prepare_orders(orders: dict[str, object]) -> dict[str, object]:
+    ...
+```
+
+- `"orders"` in `ins` is the Dagster input name.
+- `"orders"` in `inputs` is the OCLP port name.
+- `orders` is the Python function parameter.
+
+The upstream Dagster `AssetKey` may use a different name, as `raw_orders` does
+above. When Artifacts cross Dagster workers or runs, use the OCLP Artifact I/O
+manager: Dagster passes the exact `ArtifactHandle`, and OCLP verifies and loads
+the normal domain value for the function body. The function does not receive a
+shadow copy invented for OCLP.
+
+`context: dg.AssetExecutionContext` is an optional implementation parameter.
+Use it only when the body needs scheduler facts such as a partition key. The
+adapter injects it; it is neither an OCLP input Artifact nor an OCLP Execution
+parameter.
+
+### Multi-output contract
+
+Dagster outputs and OCLP output ports are independent sets with an optional
+named overlap. A shared name is bridged automatically; each unshared output
+remains owned by its declaring layer:
+
+```python
+@dg.multi_asset(
+    outs={
+        "validated": dg.AssetOut(key="validated_orders", io_manager_key="oclp_io"),
+        "preview": dg.AssetOut(key="validation_preview"),
+    },
+    ins={"orders": dg.AssetIn(key=dg.AssetKey("raw_orders"))},
+    required_resource_keys={"oclp"},
+)
+@computation(
+    name="Validate orders",
+    inputs={"orders": JsonArtifact},
+    outputs={
+        "validated": JsonArtifact(name="Validated orders"),
+        "metrics": JsonArtifact(name="Order metrics"),
+    },
+    adapters=(dagster_adapter(),),
+)
+def validate_orders(orders: dict[str, object]) -> dict[str, object]:
+    # One named result covers the union of native and OCLP outputs.
+    return {
+        "validated": orders,
+        "preview": {"kind": "validation-preview"},
+        "metrics": {"rows": len(orders)},
+    }
+```
+
+`validated` is shared: OCLP materializes its Artifact, and the adapter returns
+its exact `ArtifactHandle` to Dagster. `preview` is Dagster-only: the adapter
+passes its raw value to Dagster, which uses the output's selected native I/O
+manager. `metrics` is OCLP-only: OCLP materializes it and records it on the
+Execution, but it is not a Dagster asset.
+
+For several outputs, the application function must return a named mapping or
+an object with same-named fields, such as a dataclass or `NamedTuple`. Do not
+return a positional tuple or list. A single-output function may return its raw
+value directly. This preserves each Artifact's identity by name even when
+Dagster and OCLP expose different subsets:
+
+```python
+from typing import NamedTuple
+
+
+class ValidationOutputs(NamedTuple):
+    validated: dict[str, object]  # shared
+    preview: dict[str, object]  # Dagster-only
+    metrics: dict[str, int]  # OCLP-only
+```
+
+Only after OCLP has materialized its declared outputs does the adapter build
+the native return value. It returns an `ArtifactHandle` for each shared Dagster
+output and the raw value for each Dagster-only output, in the native Dagster
+`outs` order. OCLP-only Artifacts are deliberately omitted. The OCLP Artifact
+I/O manager persists UUID pointers, not duplicate payload data, for shared
+outputs that cross worker or Dagster-run boundaries.
+
+When the local names differ, add an explicit adapter binding from native output
+name to OCLP port; same-named outputs need no configuration:
+
+```python
+adapters=(
+    dagster_adapter(
+        output_bindings={"native_validated": "validated"},
+    ),
+)
+```
+
+The adapter validates explicit bindings against the native Dagster outputs and
+declared OCLP ports when the asset executes.
+
+### Independent use and combined use
+
+`@dg.multi_asset` does not import-time depend on `@computation`: without the
+OCLP declaration it behaves as a normal Dagster multi-asset returning ordinary
+Python values. Likewise, `@computation` can run outside Dagster inside a normal
+OCLP `@run` / `observe_run(...)` observation. Adding `dagster_adapter()` makes
+the combined invocation intentionally depend on the contract above: one body
+produces real OCLP Artifacts and the exact handles flow through Dagster.
+
 ## Why the adapter is required
 
 `@computation` and Artifact decorators are reusable declarations. Outside an
@@ -305,8 +471,10 @@ making the Dagster context part of the application function's contract.
 
 ## How to configure a multi-output Computation asset
 
-For an atomic multi-output Computation, native Dagster owns the `AssetOut`
-mapping and OCLP owns the corresponding output ports:
+This example makes every output shared. Native Dagster owns the `AssetOut`
+mapping and OCLP owns the Artifact declarations; see the
+[multi-output contract](#multi-output-contract) when either layer needs an
+additional private output:
 
 ```python
 @dg.multi_asset(
@@ -330,9 +498,9 @@ def validate_orders(orders: dict[str, object]) -> dict[str, object]:
     return {"validated": orders, "metrics": {"rows": len(orders)}}
 ```
 
-The adapter returns the exact handles in declared output-port order. A native
+The adapter returns the exact handles in native `outs` order. A native
 `multi_asset` remains atomic and non-subsettable, matching the one OCLP
-Execution that produces all output Artifacts.
+Execution that produces all shared output Artifacts.
 
 ## How to pass Artifacts between Dagster assets
 
