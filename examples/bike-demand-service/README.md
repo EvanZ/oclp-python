@@ -208,11 +208,12 @@ release ArtifactSet. There is never a hard-coded `fold_1`, `fold_2`, or
 Each cycle is a dynamic `bike_demand_training_cycle` partition, but users do
 not seed that partition manually. Launch the unpartitioned
 **bike_demand_start_release_cycle** job and set its `fold_count` and
-`temporal_validation_rmse_max` config. It creates a UUID and an immutable
-`Bike demand release-cycle request` Artifact. Its automatically enabled sensor
-adds the cycle partition and starts **bike_demand_prepare_cycle** with the same
-configuration. Preparation then materializes `Bike demand release cycle`, the
-partitioned Artifact that is a member of the final release ArtifactSet.
+`temporal_validation_rmse_max` config. Its Dagster run UUID becomes the
+portable lifecycle ID, and it creates an immutable `Bike demand release-cycle
+request` Artifact. Its automatically enabled sensor adds the cycle partition
+and starts **bike_demand_prepare_cycle** with the same configuration.
+Preparation then materializes `Bike demand release cycle`, the partitioned
+Artifact that is a member of the final release ArtifactSet.
 
 The persisted fold-definition Artifact drives
 `launch_bike_demand_fold_partitions`, which adds only the planned `fold-N`

@@ -28,6 +28,7 @@ from oclp.models import Execution, PortDefinition
 from oclp.publishing import LocalArtifactPublisher
 
 import bike_demand_service.data as data_module
+from bike_demand_service.dagster_defs import _release_cycle_id_for_start
 from bike_demand_service.data import (
     FEATURE_COLUMNS,
     TARGET_COLUMN,
@@ -68,6 +69,15 @@ def test_dagster_cycle_phases_use_explicit_oclp_run_templates() -> None:
         "Bike demand temporal validation fold",
         "Bike demand model release",
     ]
+
+
+def test_dagster_start_run_uuid_is_the_release_lifecycle_id() -> None:
+    """A start-job retry keeps the scheduler UUID as its portable lifecycle."""
+
+    run_id = str(uuid4())
+    context = SimpleNamespace(run=SimpleNamespace(run_id=run_id))
+
+    assert _release_cycle_id_for_start(context) == run_id
 
 
 @computation(

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import dagster as dg
 from oclp import (
@@ -69,14 +69,20 @@ def new_release_cycle_id() -> str:
 
 
 def _release_cycle_id_for_start(context: dg.AssetExecutionContext) -> str:
-    """Derive one repeatable UUID while a Dagster start-job retry is in flight."""
+    """Use Dagster's run UUID as the lifecycle ID for one start-job retry set."""
 
-    return str(
-        uuid5(
-            NAMESPACE_URL,
-            f"bike-demand-release-cycle-start:{context.run.run_id}",
+    dagster_run_id = str(context.run.run_id)
+    try:
+        return str(UUID(dagster_run_id))
+    except ValueError:
+        # This preserves the lifecycle profile's UUID contract for a compatible
+        # scheduler that exposes a non-UUID run identifier.
+        return str(
+            uuid5(
+                NAMESPACE_URL,
+                f"bike-demand-release-cycle-start:{dagster_run_id}",
+            )
         )
-    )
 
 
 # A cycle key is selected before the preparation job runs. It is deliberately
